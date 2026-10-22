@@ -1,0 +1,27 @@
+# AIOps for CI/CD: when a job failed, explain why (Claude, redacted logs) on the run's summary page.
+# The job that uses it needs: permissions actions: read, checks: read. Never fails the run further.
+name: AI failure diagnosis
+description: Explains a failed workflow run (.github/scripts/ai_failure_summary.py)
+inputs:
+  anthropic-api-key:
+    description: Optional; without it a plain list of the failed steps is written
+    default: ""
+  slack-webhook-url:
+    description: Optional Slack incoming webhook
+    default: ""
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      with:
+        python-version: "3.12"
+
+    - name: Explain the failure
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ github.token }}
+        ANTHROPIC_API_KEY: ${{ inputs.anthropic-api-key }}
+        SLACK_WEBHOOK_URL: ${{ inputs.slack-webhook-url }}
+      run: |
+        python -m pip install --quiet anthropic==1.15.0 pydantic==2.14.1
+        python .github/scripts/ai_failure_summary.py

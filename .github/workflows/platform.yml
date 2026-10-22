@@ -1,0 +1,126 @@
+# ---------------------------------------------------------------------------
+# Platform inside EKS (infra/platform): AWS Load Balancer Controller, Secrets Store CSI (AWS), Prometheus +
+# Grafana + Alertmanager, OpenTelemetry Collector + Tempo + Loki, Argo CD (+ the two apps), Argo Rollouts, Kyverno
+#   Pull request  -> security scans + terraform plan
+#   Push to main  -> the same, then apply EXACTLY that plan after approval (environment agripulse-infrastructure)
+# Second of two stacks: needs infra-aws applied (it reads that state). Composed of infra/modules/k8s-*.
+# Sign-in: GitHub OIDC -> IAM role only. Helm/Kubernetes reach EKS with "aws eks get-token" (EKS access entry).
+# ---------------------------------------------------------------------------
+name: platform
+
+on:
+  push:
+    branches: [main]
+    paths: ["infra/platform/**", "infra/modules/k8s-*/**", ".github/workflows/platform.yml"]
+  pull_request:
+    branches: [main]
+    paths: ["infra/platform/**", "infra/modules/k8s-*/**", ".github/workflows/platform.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write   # OIDC token for AWS
+
+concurrency:
+  group: platform
+  cancel-in-progress: false   # never cancel a running apply
+
+env:
+  AWS_REGION: eu-west-2
+  TF_DIR: infra/platform
+  TF_VERSION: 1.15.6
+  TF_IN_AUTOMATION: "true"
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0   # Gitleaks scans the history
+
+      - uses: ./.github/actions/security-scans
+        with:
+          iac-paths: infra/platform infra/modules
+
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - name: terraform plan
+        working-directory: ${{ env.TF_DIR }}
+        env:
+          # Argo CD watches THIS repository (nothing hard-coded); a private repository needs GIT_REPO_TOKEN
+          TF_VAR_git_repo_url: ${{ github.server_url }}/${{ github.repository }}.git
+          TF_VAR_git_repo_token: ${{ secrets.GIT_REPO_TOKEN }}
+          TF_VAR_slack_webhook_url: ${{ secrets.SLACK_WEBHOOK_URL }}
+          TF_VAR_price_admins: ${{ vars.PRICE_ADMINS != '' && vars.PRICE_ADMINS || '[]' }}   # e.g. ["you@example.com"]
+        run: |
+          terraform init -input=false
+          terraform fmt -check -recursive . ../modules
+          terraform validate
+          terraform plan -input=false -out=tfplan
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: tfplan-platform
+          path: ${{ env.TF_DIR }}/tfplan
+          retention-days: 5
+
+  apply:
+    needs: plan
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: agripulse-infrastructure   # required reviewers: Settings > Environments
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: tfplan-platform
+          path: ${{ env.TF_DIR }}
+
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-duration-seconds: 7200
+
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - name: terraform apply (the reviewed plan)
+        working-directory: ${{ env.TF_DIR }}
+        run: |
+          terraform init -input=false
+          terraform apply -input=false tfplan
+          {
+            echo "### Platform applied in EKS"
+            echo "- Grafana: \`$(terraform output -json grafana_access | jq -r .port_forward)\`"
+            echo "- Image signatures: $(terraform output -raw image_signature_mode)"
+            echo "- Next (first deployment): run **web**, **incident-blog** and **mobile-backend**"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  diagnose:
+    needs: [plan, apply]
+    if: failure()
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      checks: read
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/ai-diagnosis
+        with:
+          anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+          slack-webhook-url: ${{ secrets.SLACK_WEBHOOK_URL }}

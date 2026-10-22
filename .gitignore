@@ -1,0 +1,38 @@
+# Terraform: provider binaries (hundreds of MB each), local state and plans.
+# Keep .terraform.lock.hcl: it pins the exact provider versions the pipelines use.
+.terraform/
+*.tfstate
+*.tfstate.*
+tfplan
+*.tfplan
+crash.log
+*.tfvars
+!*.tfvars.example
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+venv/
+*.egg-info/
+build/
+dist/
+
+# Node / editors / OS
+node_modules/
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+~$*
+
+# Secrets that must never be committed
+.env
+.env.*
+
+# DAST (OWASP ZAP): reports and specs generated per run
+app/dast/reports/
+app/dast/openapi/generated-*
+app/dast/openapi/web.json
+app/dast/openapi/incident-blog.json

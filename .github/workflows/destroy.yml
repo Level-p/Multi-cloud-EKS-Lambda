@@ -1,0 +1,126 @@
+# ---------------------------------------------------------------------------
+# Tear down AgriPulse when you are done, in the reverse order of creation: platform -> aws.
+#   Manual only (Actions > destroy > Run workflow), you type the confirmation phrase, and each job
+#   waits for approval in the environment agripulse-infrastructure.
+#
+#   platform  the Argo CD apps are deleted (their pods and target group registrations go), then Tempo and Loki
+#             with their EBS volumes (nothing is left billing outside the cluster); everything else in the
+#             cluster is simply forgotten by Terraform: it goes with the cluster in the aws job
+#   aws       EKS, VPC, NAT, RDS PostgreSQL (no final snapshot unless deletion_protection), ALB, the WAF and
+#             the three CloudFront distributions, API Gateway + Lambda, ECR, KMS keys (7-day deletion window),
+#             the S3 media bucket and its files, Cognito, Secrets Manager, alarms, the DNS records in the zone
+#
+# Kept: what infra/bootstrap.sh made (the S3 state bucket, the GitHub Actions role) and the Route 53 zone.
+# ---------------------------------------------------------------------------
+name: destroy
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: What to destroy ("everything" includes the platform)
+        type: choice
+        options: [everything, platform]
+        default: everything
+      confirm:
+        description: Type "destroy agripulse" to confirm
+        type: string
+        required: true
+
+permissions:
+  contents: read
+  id-token: write   # OIDC token for AWS
+
+env:
+  AWS_REGION: eu-west-2
+  TF_VERSION: 1.15.6
+  TF_IN_AUTOMATION: "true"
+
+jobs:
+  confirm:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check the confirmation phrase
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+          TARGET: ${{ inputs.target }}
+        run: |
+          [ "$CONFIRM" = "destroy agripulse" ] || { echo "::error::Type exactly: destroy agripulse"; exit 1; }
+          echo "Destroying: $TARGET" >> "$GITHUB_STEP_SUMMARY"
+
+  platform:
+    needs: confirm
+    runs-on: ubuntu-latest
+    environment: agripulse-infrastructure   # required reviewers approve the destroy
+    timeout-minutes: 45
+    concurrency:
+      group: platform                        # never at the same time as a platform apply
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - name: Remove what would outlive the cluster, forget the rest
+        working-directory: infra/platform
+        run: |
+          set -uo pipefail
+          terraform init -input=false
+          CLUSTER=$(aws eks list-clusters --query "clusters[?@=='agripulse-eks'] | [0]" --output text)
+          if [ "$CLUSTER" = "agripulse-eks" ]; then
+            aws eks update-kubeconfig --region "$AWS_REGION" --name "$CLUSTER"
+            # Argo CD apps (finalizer: their resources are pruned), then the releases that own EBS volumes
+            kubectl delete applications.argoproj.io -n argocd --all --wait=true --timeout=5m || true
+            helm uninstall tempo loki -n monitoring --wait --timeout 5m || true
+            kubectl delete pvc -n monitoring --all --wait=true --timeout=5m || true   # reclaimPolicy Delete: EBS volumes go
+          else
+            echo "No cluster: nothing inside it to clean up"
+          fi
+          inside=$(terraform state list || true)
+          [ -n "$inside" ] && echo "$inside" | xargs terraform state rm
+          echo "### Platform removed (in-cluster state forgotten; EBS volumes deleted)" >> "$GITHUB_STEP_SUMMARY"
+
+  aws:
+    needs: platform
+    if: inputs.target == 'everything'
+    runs-on: ubuntu-latest
+    environment: agripulse-infrastructure
+    timeout-minutes: 120
+    concurrency:
+      group: infra-aws
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-duration-seconds: 7200
+
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - name: terraform destroy (AWS)
+        working-directory: infra/aws
+        env:
+          TF_VAR_alarm_email: ${{ secrets.ALARM_EMAIL }}
+        run: |
+          terraform init -input=false
+          # deletion_protection = true (RDS, ALB, Cognito, images, media files kept) makes this fail on purpose
+          terraform destroy -input=false -auto-approve
+          {
+            echo "### AWS destroyed"
+            echo "- Kept: the Terraform state bucket, the GitHub Actions IAM role and the Route 53 zone"
+            echo "- The KMS keys are pending deletion for 7 days (no cost while pending)"
+          } >> "$GITHUB_STEP_SUMMARY"

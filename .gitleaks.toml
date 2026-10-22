@@ -1,0 +1,11 @@
+# Default Gitleaks rules + allow-list for test fixtures that contain FAKE secrets on purpose
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Intentional fake secrets in tests and rule fixtures"
+paths = [
+  '''app/(mobile-backend|web|incident-blog|dast)/tests/.*''',
+  '''\.github/scripts/test_.*\.py''',
+  '''\.semgrep/ai-code-rules\.py''',
+]

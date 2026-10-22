@@ -1,0 +1,136 @@
+# ---------------------------------------------------------------------------
+# AWS infrastructure (infra/aws, composed of infra/modules/*): VPC, EKS, RDS PostgreSQL (Multi-AZ), ECR + Cosign
+# KMS key, S3 + GuardDuty, Cognito, Secrets Manager, API Gateway + Lambda, ONE WAF on three CloudFront
+# distributions, ALB, Route 53 / ACM, CloudWatch alarms
+#   Pull request  -> security scans + terraform plan
+#   Push to main  -> the same, then apply EXACTLY that plan after approval (environment agripulse-infrastructure)
+# First of two stacks: infra-aws -> platform.
+# Sign-in: GitHub OIDC -> IAM role (secret AWS_ROLE_ARN, from infra/bootstrap.sh). No AWS keys.
+# ---------------------------------------------------------------------------
+name: infra-aws
+
+on:
+  push:
+    branches: [main]
+    paths: ["infra/aws/**", "infra/modules/*/**", "!infra/modules/k8s-*/**", ".github/workflows/infra-aws.yml"]
+  pull_request:
+    branches: [main]
+    paths: ["infra/aws/**", "infra/modules/*/**", "!infra/modules/k8s-*/**", ".github/workflows/infra-aws.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write   # OIDC token for AWS
+
+concurrency:
+  group: infra-aws
+  cancel-in-progress: false   # never cancel a running apply
+
+env:
+  AWS_REGION: eu-west-2
+  TF_DIR: infra/aws
+  TF_VERSION: 1.15.6
+  TF_IN_AUTOMATION: "true"
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0   # Gitleaks scans the history
+
+      - uses: ./.github/actions/security-scans
+        with:
+          iac-paths: infra/aws infra/modules
+
+      - name: Check repository secrets
+        env:
+          AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
+        run: |
+          [ -n "$AWS_ROLE_ARN" ] || { echo "::error::Secret AWS_ROLE_ARN is not set (printed by infra/bootstrap.sh)."; exit 1; }
+
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - name: terraform plan
+        working-directory: ${{ env.TF_DIR }}
+        env:
+          TF_VAR_alarm_email: ${{ secrets.ALARM_EMAIL }}
+        run: |
+          terraform init -input=false
+          terraform fmt -check -recursive . ../modules
+          terraform validate
+          terraform plan -input=false -out=tfplan
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: tfplan-aws
+          # the plan refers to the placeholder Lambda zips built during plan: the apply job needs the same files
+          path: |
+            ${{ env.TF_DIR }}/tfplan
+            ${{ env.TF_DIR }}/.build/
+          include-hidden-files: true   # .build/ starts with a dot
+          if-no-files-found: error
+          retention-days: 5
+
+  apply:
+    needs: plan
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: agripulse-infrastructure   # required reviewers: Settings > Environments
+    timeout-minutes: 120                    # EKS 15-25 min, RDS Multi-AZ 15-30 min, CloudFront up to 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: tfplan-aws
+          path: ${{ env.TF_DIR }}
+
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-duration-seconds: 7200
+
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - name: terraform apply (the reviewed plan)
+        working-directory: ${{ env.TF_DIR }}
+        run: |
+          terraform init -input=false
+          terraform apply -input=false tfplan
+          {
+            echo "### AWS infrastructure applied"
+            echo "- EKS: \`$(terraform output -raw kubeconfig_command)\`"
+            echo "- Web app: $(terraform output -raw web_url) (serves once **platform** and **web** have run)"
+            echo "- PostgreSQL: $(terraform output -raw db_endpoint) (Multi-AZ)"
+            echo "- Mobile API: $(terraform output -raw mobile_api_url)"
+            echo "- Next: run **platform**"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  diagnose:
+    needs: [plan, apply]
+    if: failure()
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      checks: read
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/ai-diagnosis
+        with:
+          anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+          slack-webhook-url: ${{ secrets.SLACK_WEBHOOK_URL }}

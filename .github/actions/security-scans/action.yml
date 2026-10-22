@@ -1,0 +1,58 @@
+# DevSecOps gates shared by every workflow. Needs a checkout with full history (fetch-depth: 0).
+#   Gitleaks   secrets in the repository history                        (blocking)
+#   Semgrep    Python/Dockerfile/secrets rules + AI-code rules           (ERROR findings block)
+#   pip-audit  known vulnerabilities in the hash-locked requirements     (blocking)
+#   Checkov    IaC misconfigurations (Terraform, Kubernetes, Dockerfile) (report only)
+name: Security scans
+description: Gitleaks, Semgrep, pip-audit and Checkov
+inputs:
+  app-path:
+    description: Folder with requirements.txt (empty = skip pip-audit)
+    default: ""
+  iac-paths:
+    description: Space-separated folders for Checkov
+    default: ""
+runs:
+  using: composite
+  steps:
+    - name: Gitleaks (secrets)
+      shell: bash
+      run: |
+        docker run --rm -v "$GITHUB_WORKSPACE:/repo" zricethezav/gitleaks:v8.30.1 \
+          git /repo --redact --exit-code 1 --report-format sarif --report-path /repo/gitleaks.sarif
+
+    - name: Semgrep (SAST + AI-code rules)
+      shell: bash
+      run: |
+        docker run --rm -v "$GITHUB_WORKSPACE:/src" -w /src semgrep/semgrep:1.181.0 sh -c '
+          semgrep --test --config .semgrep/ai-code-rules.yml .semgrep/ai-code-rules.py &&
+          semgrep scan --metrics=off --config p/python --config p/secrets --config p/dockerfile \
+            --config .semgrep/ai-code-rules.yml --exclude .semgrep --severity ERROR --error \
+            --sarif-output=semgrep.sarif --text'
+
+    - if: inputs.app-path != ''
+      uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      with:
+        python-version: "3.12"
+
+    - if: inputs.app-path != ''
+      name: pip-audit
+      shell: bash
+      env:
+        APP_PATH: ${{ inputs.app-path }}
+      run: |
+        python -m pip install --quiet pip-audit==2.10.1
+        pip-audit --require-hashes --disable-pip -r "$APP_PATH/requirements.txt"
+
+    - if: inputs.iac-paths != ''
+      name: Checkov (report only)
+      shell: bash
+      env:
+        IAC_PATHS: ${{ inputs.iac-paths }}
+      run: |
+        for path in $IAC_PATHS; do
+          echo "::group::Checkov $path"
+          docker run --rm -v "$GITHUB_WORKSPACE:/src" bridgecrew/checkov:3.3.29 \
+            -d "/src/$path" --quiet --compact --soft-fail -o cli
+          echo "::endgroup::"
+        done

@@ -1,0 +1,6 @@
+apiVersion: v2
+name: agripulse-web
+description: AgriPulse web (farm dashboard) on EKS - Argo Rollouts canary with Prometheus analysis, oauth2-proxy (Cognito) behind CloudFront + ALB (TargetGroupBinding), Secrets Manager CSI, RDS PostgreSQL with IAM authentication, Valkey cache
+type: application
+version: 1.0.0
+appVersion: "1.0.0"

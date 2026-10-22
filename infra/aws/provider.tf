@@ -1,0 +1,32 @@
+provider "aws" {
+  region = var.region
+  default_tags {
+    tags = { Project = var.name, ManagedBy = "terraform" }
+  }
+}
+
+# CloudFront-scope WAF, its log group and CloudFront certificates must be created in us-east-1
+provider "aws" {
+  alias  = "us_east_1"
+  region = "us-east-1"
+  default_tags {
+    tags = { Project = var.name, ManagedBy = "terraform" }
+  }
+}
+
+terraform {
+  required_version = ">= 1.10.0"
+  required_providers {
+    aws     = { source = "hashicorp/aws", version = "~> 6.0" }
+    random  = { source = "hashicorp/random", version = "~> 3.6" }
+    archive = { source = "hashicorp/archive", version = "~> 2.7" }
+  }
+  # First of two stacks: aws -> platform (which reads this state's outputs)
+  backend "s3" {
+    bucket       = "mfon21-agripulse-tfstate"
+    key          = "eks/aws.tfstate"
+    region       = "eu-west-2"
+    use_lockfile = true
+    encrypt      = true
+  }
+}

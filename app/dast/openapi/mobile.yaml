@@ -1,0 +1,72 @@
+openapi: 3.0.3
+# AgriPulse mobile API (CloudFront -> API Gateway REST -> Lambda). Cognito authorizer on every route but /health.
+# Keep in step with app/mobile-backend/agripulse_mobile/api.py (the Pydantic models are the truth).
+# FIELD_ID_PLACEHOLDER is replaced with a field created just before the scan.
+info:
+  title: AgriPulse mobile API
+  version: "1.0"
+security:
+  - cognito: []
+components:
+  securitySchemes:
+    cognito: { type: http, scheme: bearer, bearerFormat: JWT }
+  parameters:
+    FieldId:
+      name: field_id
+      in: path
+      required: true
+      schema: { type: string, example: FIELD_ID_PLACEHOLDER }
+paths:
+  /health:
+    get:
+      security: []
+      responses: { "200": { description: alive } }
+  /fields:
+    get:
+      responses: { "200": { description: the caller's fields } }
+    post:
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, crop, area_ha, latitude, longitude]
+              properties:
+                name: { type: string, maxLength: 80, example: North plot }
+                crop: { type: string, example: maize }
+                area_ha: { type: number, example: 12.5 }
+                latitude: { type: number, example: 6.45 }
+                longitude: { type: number, example: 3.39 }
+      responses: { "201": { description: created }, "422": { description: invalid } }
+  /fields/{field_id}/observations:
+    parameters: [{ $ref: "#/components/parameters/FieldId" }]
+    get:
+      responses: { "200": { description: observations }, "404": { description: not the caller's field } }
+    post:
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [growth_stage, issue]
+              properties:
+                growth_stage: { type: string, enum: [planting, emergence, vegetative, flowering, fruiting, harvest], example: vegetative }
+                issue: { type: string, enum: [none, pest, disease, drought, flood, nutrient], example: pest }
+                note: { type: string, maxLength: 2000, example: Fall armyworm on the east edge }
+                media_keys: { type: array, maxItems: 5, items: { type: string }, example: [] }
+      responses: { "201": { description: created }, "422": { description: invalid } }
+  /media/upload-url:
+    post:
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [content_type, size_bytes]
+              properties:
+                content_type: { type: string, example: image/jpeg }
+                size_bytes: { type: integer, example: 250000 }
+      responses: { "200": { description: presigned POST for S3 } }

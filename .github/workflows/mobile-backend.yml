@@ -1,0 +1,166 @@
+# ---------------------------------------------------------------------------
+# AgriPulse mobile backend -> AWS Lambda behind API Gateway, behind CloudFront + AWS WAF (https://api.<zone>)
+#   test             pytest (SQLite for PostgreSQL, moto for S3, real API Gateway proxy events)
+#   security         Gitleaks, Semgrep (+ AI-code rules), pip-audit, Checkov on the Lambda/API module
+#   dast             OWASP ZAP full scan of the real handler behind a local API Gateway stand-in
+#   package          Linux wheels for Python 3.12 (x86_64), hash-verified, + the code + the RDS CA bundle
+#                    (checksum-verified), zipped
+#   deploy           approval (environment agripulse-production), then canary: new version smoke-tested,
+#                    10 % for 5 min watched by CloudWatch, then 100 % or automatic rollback
+#                    (.github/scripts/lambda_canary.sh)                                    (main only)
+#   dast-production  OWASP ZAP baseline (passive, unauthenticated) of https://api.<zone>
+#   diagnose         AI explanation if anything failed (Claude)
+# ---------------------------------------------------------------------------
+name: mobile-backend
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "app/mobile-backend/**"
+      - "app/dast/**"
+      - ".github/workflows/mobile-backend.yml"
+      - ".github/scripts/lambda_canary.sh"
+      - ".github/actions/**"
+  pull_request:
+    branches: [main]
+    paths: ["app/mobile-backend/**", "app/dast/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write   # OIDC token for AWS
+  actions: read     # the AI diagnosis reads the failed jobs' logs
+  checks: read
+
+concurrency:
+  group: mobile-backend-${{ github.ref }}
+  cancel-in-progress: false   # never cancel a running canary
+
+env:
+  AWS_REGION: eu-west-2
+  RDS_CA_SHA256: 90a6f1a7978a1b1b096dca6c57511ca48d3b8cf052f8e704baf358f34ea2f21b   # same pin as the Dockerfiles
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/python-tests
+        with:
+          app-path: app/mobile-backend
+
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/security-scans
+        with:
+          app-path: app/mobile-backend
+          iac-paths: infra/modules/mobile-api
+
+  dast:
+    name: dast (OWASP ZAP, ephemeral)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/dast-zap
+        with:
+          app: mobile-backend
+          mode: ephemeral
+
+  package:
+    needs: [test, security, dast]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Build the Lambda package
+        working-directory: app/mobile-backend
+        run: |
+          set -euo pipefail
+          rm -rf build && mkdir build
+          # Wheels for the Lambda runtime (Amazon Linux, x86_64, CPython 3.12), exact hashes only
+          python -m pip install --quiet --require-hashes -r requirements.txt --target build \
+            --platform manylinux2014_x86_64 --implementation cp --python-version 3.12 --only-binary=:all:
+          cp -r agripulse_mobile build/
+          # The RDS CA bundle (DB_SSLROOTCERT=global-bundle.pem): PostgreSQL's certificate is verified against it
+          curl -sSfLo build/global-bundle.pem https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem
+          echo "$RDS_CA_SHA256  build/global-bundle.pem" | sha256sum -c -
+          (cd build && zip -q -r ../mobile-backend.zip .)
+          ls -lh mobile-backend.zip
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: lambda
+          path: app/mobile-backend/mobile-backend.zip
+          retention-days: 14
+
+  deploy:
+    needs: package
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    environment: agripulse-production   # required reviewers: Settings > Environments
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: lambda
+          path: dist
+
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: ./.github/actions/infra-outputs
+        with:
+          stack: aws
+
+      - name: Canary deploy with automated rollback
+        run: |
+          CANARY_ALARM="$TF_OUT_CANARY_ALARM" BAKE_MINUTES=5 CANARY_WEIGHT=0.1 \
+            bash .github/scripts/lambda_canary.sh "$TF_OUT_LAMBDA_FUNCTION_NAME" dist/mobile-backend.zip
+
+  dast-production:
+    name: dast-production (OWASP ZAP baseline)
+    needs: deploy
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: ./.github/actions/infra-outputs
+        with:
+          stack: aws
+
+      - uses: ./.github/actions/dast-zap
+        with:
+          app: mobile-backend
+          mode: production
+          target-url: ${{ env.TF_OUT_MOBILE_API_URL }}
+
+  diagnose:
+    needs: [test, security, dast, package, deploy, dast-production]
+    if: failure()
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      checks: read
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/ai-diagnosis
+        with:
+          anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+          slack-webhook-url: ${{ secrets.SLACK_WEBHOOK_URL }}

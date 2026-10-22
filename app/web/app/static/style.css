@@ -1,0 +1,12 @@
+:root { --green: #2e7d32; --ink: #1c2233; --line: #dfe3ec; }
+body { font: 15px/1.5 system-ui, sans-serif; color: var(--ink); margin: 0; }
+header { display: flex; gap: 16px; align-items: center; padding: 12px 24px; background: var(--green); color: #fff; }
+.brand { color: #fff; font-weight: 700; font-size: 1.2rem; text-decoration: none; }
+.who { margin-left: auto; opacity: .9; }
+main { max-width: 1000px; margin: 24px auto; padding: 0 16px; }
+table { width: 100%; border-collapse: collapse; margin: 12px 0 20px; }
+th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+form.inline { display: flex; gap: 8px; flex-wrap: wrap; }
+input, button { font: inherit; padding: 6px 10px; border-radius: 6px; border: 1px solid var(--line); }
+button { background: var(--green); color: #fff; border-color: var(--green); cursor: pointer; }
+footer { text-align: center; color: #5b6475; font-size: .8rem; padding: 24px; }

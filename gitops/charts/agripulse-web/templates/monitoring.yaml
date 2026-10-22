@@ -1,0 +1,59 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: agripulse-web
+  labels: {{- include "web.labels" . | nindent 4 }}
+spec:
+  selector: { matchLabels: { app.kubernetes.io/name: agripulse-web } }
+  # Lets the canary analysis select the new pods only
+  podTargetLabels: [rollouts-pod-template-hash]
+  endpoints: [{ port: http, path: /metrics, interval: 15s }]
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: agripulse-web
+  labels: {{- include "web.labels" . | nindent 4 }}
+spec:
+  groups:
+    - name: agripulse-web
+      rules:
+        - alert: AgriPulseWebHighErrorRate
+          expr: |
+            sum(rate(http_requests_total{namespace="{{ .Release.Namespace }}", status=~"5.."}[5m]))
+              / clamp_min(sum(rate(http_requests_total{namespace="{{ .Release.Namespace }}"}[5m])), 1e-6) > 0.05
+          for: 5m
+          labels: { severity: critical, namespace: {{ .Release.Namespace }} }
+          annotations: { summary: "AgriPulse web: more than 5% of requests fail" }
+        - alert: AgriPulseWebSlow
+          expr: histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket{namespace="{{ .Release.Namespace }}"}[5m]))) > 1
+          for: 10m
+          labels: { severity: warning, namespace: {{ .Release.Namespace }} }
+          annotations: { summary: "AgriPulse web: p95 latency above 1 s" }
+        # The cache exists to protect PostgreSQL (a db.t3.micro): a low hit ratio predicts database CPU trouble
+        - alert: AgriPulseCacheHitRatioLow
+          expr: |
+            sum(rate(agripulse_cache_hits_total{namespace="{{ .Release.Namespace }}"}[15m]))
+              / clamp_min(sum(rate(agripulse_cache_hits_total{namespace="{{ .Release.Namespace }}"}[15m])) + sum(rate(agripulse_cache_misses_total{namespace="{{ .Release.Namespace }}"}[15m])), 1e-6) < 0.6
+          for: 15m
+          labels: { severity: warning, namespace: {{ .Release.Namespace }} }
+          annotations: { summary: "Redis hit ratio below 60%: reads are falling through to PostgreSQL" }
+        - alert: AgriPulseRedisErrors
+          expr: increase(agripulse_cache_errors_total{namespace="{{ .Release.Namespace }}"}[5m]) > 10
+          labels: { severity: warning, namespace: {{ .Release.Namespace }} }
+          annotations: { summary: "The web app cannot reach Redis (serving from SQL only)" }
+        # Valkey runs in the cluster: watch it like any other workload (metrics from redis_exporter)
+        - alert: AgriPulseRedisDown
+          expr: redis_up{namespace="{{ .Release.Namespace }}"} == 0 or absent(redis_up{namespace="{{ .Release.Namespace }}"})
+          for: 5m
+          labels: { severity: warning, namespace: {{ .Release.Namespace }} }
+          annotations: { summary: "The in-cluster Valkey cache is down: every read goes to PostgreSQL" }
+        - alert: AgriPulseRedisMemoryHigh
+          expr: redis_memory_used_bytes{namespace="{{ .Release.Namespace }}"} / redis_memory_max_bytes{namespace="{{ .Release.Namespace }}"} > 0.9
+          for: 15m
+          labels: { severity: info, namespace: {{ .Release.Namespace }} }
+          annotations: { summary: "Valkey is near maxmemory and evicting keys: raise redis.maxMemory if the hit ratio drops" }
+        - alert: AgriPulseCanaryAborted
+          expr: rollout_info{namespace="{{ .Release.Namespace }}", phase="Degraded"} == 1
+          labels: { severity: warning, namespace: {{ .Release.Namespace }} }
+          annotations: { summary: "A canary release was aborted by the automated analysis and rolled back" }

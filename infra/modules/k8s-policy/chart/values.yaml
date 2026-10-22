@@ -1,0 +1,7 @@
+# All values come from infra/platform/policy.tf
+namespaces: []              # the app namespaces the policies apply to
+registry: ""                # <account>.dkr.ecr.<region>.amazonaws.com: our images are <registry>/agripulse/*
+pinnedImages: []            # exact third-party references allowed (pinned by digest)
+oauth2ProxyPrefix: quay.io/oauth2-proxy/oauth2-proxy:v
+cosignPublicKey: ""         # PEM of the KMS signing key (infra/aws registry.tf)
+signatureAction: Deny       # Deny | Audit

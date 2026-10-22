@@ -1,0 +1,105 @@
+# DAST with OWASP ZAP.
+#   mode: ephemeral   start the app on the runner (throwaway data), FULL scan: passive + active
+#                     attacks against every OpenAPI operation and every form          (blocking)
+#   mode: production  BASELINE scan (passive, unauthenticated) of the deployed endpoint (blocking)
+# Results: the summary on the run page, and the artifact zap-<app>-<mode> (HTML report, SARIF, JSON, JUnit).
+# The gate is app/dast/zap_gate.py with app/dast/zap-policy.json (reviewed, expiring exceptions).
+name: OWASP ZAP DAST
+description: Full scan of the app on the runner, or baseline scan of production
+inputs:
+  app:
+    description: web | incident-blog | mobile-backend
+    required: true
+  mode:
+    description: ephemeral | production
+    required: true
+  target-url:
+    description: "production: the public URL"
+    default: ""
+runs:
+  using: composite
+  steps:
+    - if: inputs.mode == 'ephemeral'
+      uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      with:
+        python-version: "3.12"
+
+    - if: inputs.mode == 'ephemeral'
+      name: DAST gate self-test
+      shell: bash
+      run: python -m pip install --quiet pytest==9.1.1 && python -m pytest -q app/dast/tests
+
+    - if: inputs.mode == 'ephemeral' && inputs.app != 'mobile-backend'
+      name: Start ${{ inputs.app }} (uvicorn, SQLite)
+      shell: bash
+      env:
+        APP: ${{ inputs.app }}
+      run: |
+        set -euo pipefail
+        python -m pip install --quiet --require-hashes -r "app/$APP/requirements.txt"
+        mkdir -p /tmp/dast-logs
+        # SQLite instead of PostgreSQL, no Redis, a fixed signed-in user instead of oauth2-proxy
+        export DATABASE_URL=sqlite:////tmp/dast.db DEV_USER=dast@agripulse.example CSRF_SECRET=dast-only \
+          PRICE_ADMINS=dast@agripulse.example WEBHOOK_TOKEN=dast-only
+        (cd "app/$APP" && nohup python -m uvicorn app.main:app --host 127.0.0.1 --port 8080 \
+          --no-server-header > /tmp/dast-logs/app.log 2>&1 &)
+        for i in $(seq 1 30); do curl -fsS http://127.0.0.1:8080/healthz > /dev/null && break; sleep 2; done
+        curl -fsS http://127.0.0.1:8080/readyz
+        # The OpenAPI document from the app's own code, and one record behind the example ids
+        python app/dast/export_openapi.py "$APP" "app/dast/openapi/$APP.json" --seed http://127.0.0.1:8080
+
+    - if: inputs.mode == 'ephemeral' && inputs.app != 'mobile-backend'
+      name: OWASP ZAP full scan + gate
+      shell: bash
+      env:
+        APP: ${{ inputs.app }}
+      run: bash app/dast/run-zap.sh ci-full "$APP" http://localhost:8080 "$APP.json"
+
+    - if: inputs.mode == 'ephemeral' && inputs.app == 'mobile-backend'
+      name: Start the mobile backend (API Gateway stand-in, SQLite, moto)
+      shell: bash
+      run: |
+        set -euo pipefail
+        python -m pip install --quiet --require-hashes -r app/mobile-backend/requirements.txt
+        python -m pip install --quiet -r app/mobile-backend/requirements-dev.in    # moto
+        mkdir -p /tmp/dast-logs
+        PYTHONPATH=app/mobile-backend nohup python app/dast/mobile_local.py > /tmp/dast-logs/app.log 2>&1 &
+        for i in $(seq 1 30); do curl -fsS http://127.0.0.1:8090/health > /dev/null && break; sleep 2; done
+        FIELD=$(curl -fsS -X POST http://127.0.0.1:8090/fields -H "Authorization: Bearer seed" -H "Content-Type: application/json" \
+          -d '{"name":"DAST plot","crop":"maize","area_ha":1,"latitude":6.4,"longitude":3.4}' | python -c "import json,sys; print(json.load(sys.stdin)['field_id'])")
+        echo "DAST_FIELD_ID=$FIELD" >> "$GITHUB_ENV"
+
+    - if: inputs.mode == 'ephemeral' && inputs.app == 'mobile-backend'
+      name: OWASP ZAP full scan + gate
+      shell: bash
+      run: SPEC_SUBST="FIELD_ID_PLACEHOLDER=$DAST_FIELD_ID" bash app/dast/run-zap.sh ci-full mobile-backend http://localhost:8090 mobile.yaml
+
+    - if: always() && inputs.mode == 'ephemeral'
+      name: No unhandled errors in the app log
+      shell: bash
+      run: |
+        # Application errors only: uvicorn's "Exception in ASGI application", the apps' loggers at
+        # ERROR (agripulse.web, agripulse.mobile, incident-blog). uvicorn/h11 noise about deliberately
+        # malformed requests (TLS sent to a plain-HTTP port, bad request lines) is not an app bug.
+        if grep -hE 'Exception in ASGI application|"level":"ERROR","logger":"(agripulse|incident-blog)' /tmp/dast-logs/*.log; then
+          echo "::error::The app raised errors while being scanned (see above)."; exit 1
+        fi
+
+    - if: inputs.mode == 'production'
+      name: OWASP ZAP baseline scan (production) + gate
+      shell: bash
+      env:
+        APP: ${{ inputs.app }}
+        URL: ${{ inputs.target-url }}
+      run: |
+        set -euo pipefail
+        if [ -z "$URL" ]; then echo "::error::No public URL: has the infrastructure workflow run (terraform output)?"; exit 1; fi
+        bash app/dast/run-zap.sh prod-baseline "$APP" "$URL"
+
+    - if: always()
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: zap-${{ inputs.app }}-${{ inputs.mode }}-${{ github.run_attempt }}
+        path: app/dast/reports
+        if-no-files-found: ignore
+        retention-days: 30

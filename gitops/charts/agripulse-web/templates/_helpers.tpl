@@ -1,0 +1,44 @@
+{{- define "web.labels" -}}
+app.kubernetes.io/part-of: agripulse
+app.kubernetes.io/managed-by: {{ .Release.Service }}
+{{- end }}
+
+{{- define "web.podSecurity" -}}
+runAsNonRoot: true
+runAsUser: 10001
+runAsGroup: 10001
+seccompProfile: { type: RuntimeDefault }
+{{- end }}
+
+{{- define "web.containerSecurity" -}}
+allowPrivilegeEscalation: false
+readOnlyRootFilesystem: true
+capabilities: { drop: ["ALL"] }
+{{- end }}
+
+{{/* Secrets Manager secrets mounted by the CSI driver (also synced into a Kubernetes Secret for env vars) */}}
+{{- define "web.secretsVolume" -}}
+- name: secrets
+  csi:
+    driver: secrets-store.csi.k8s.io
+    readOnly: true
+    volumeAttributes: { secretProviderClass: agripulse-web-secrets }
+{{- end }}
+
+{{/* PostgreSQL on RDS with IAM authentication: boto3 signs a token with the pod's role (EKS Pod Identity) */}}
+{{- define "web.dbEnv" -}}
+- { name: DB_HOST, value: {{ .Values.db.host | quote }} }
+- { name: DB_PORT, value: {{ .Values.db.port | toString | quote }} }
+- { name: DB_NAME, value: {{ .Values.db.name | quote }} }
+- { name: DB_USER, value: {{ .Values.db.user | quote }} }
+- { name: AWS_REGION, value: {{ .Values.aws.region | quote }} }
+{{- end }}
+
+{{/* oauth2-proxy signs staff in with the Cognito staff user pool (OIDC authorization code flow) */}}
+{{- define "web.oauth2Args" -}}
+- --provider=oidc
+- --oidc-issuer-url={{ .Values.auth.issuerUrl }}
+- --client-id={{ .Values.auth.clientId }}
+- --scope=openid email profile
+- --email-domain=*
+{{- end }}

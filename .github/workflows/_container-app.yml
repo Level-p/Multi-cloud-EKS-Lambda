@@ -1,0 +1,224 @@
+# ---------------------------------------------------------------------------
+# CI/CD for an EKS application (web or incident blog), GitOps style. Called by web.yml and incident-blog.yml.
+#   test             pytest with hash-verified dependencies
+#   security         Gitleaks, Semgrep (+ AI-code rules), pip-audit, Checkov on the chart
+#   dast             OWASP ZAP full scan (passive + active) of the app started on the runner (blocking)
+#   build            docker build -> Trivy (fixable CRITICAL blocks) -> push to ECR -> SBOM (Syft)
+#                    -> Cosign signature + SBOM attestation with the AWS KMS key              (main only)
+#   gitops           approval (environment agripulse-production), then commit the new image tag to
+#                    gitops/charts/<app>/values.yaml: Argo CD deploys it (Kyverno checks the signature)
+#   observe          watch the rollout in EKS; a canary aborted by the analysis fails the run
+#   dast-production  OWASP ZAP baseline (passive) of the public URL (AWS WAF -> CloudFront -> ALB)
+#   diagnose         (only on failure) AI explanation of what broke (Claude)
+# Registry, cluster, signing key and URL come from the Terraform state (.github/actions/infra-outputs).
+# ---------------------------------------------------------------------------
+name: container-app
+
+on:
+  workflow_call:
+    inputs:
+      app:          { type: string, required: true, description: "web | incident-blog (the folder under app/)" }
+      chart:        { type: string, required: true, description: "gitops/charts/<chart>" }
+      workload:     { type: string, required: true, description: "kind/name to watch in the cluster, e.g. rollout/agripulse-web" }
+      namespace:    { type: string, required: true }
+      url-env:      { type: string, required: true, description: "variable with the public URL, from the infra/aws outputs: TF_OUT_WEB_URL | TF_OUT_INCIDENT_BLOG_URL" }
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  AWS_REGION: eu-west-2
+  TAG: r${{ github.run_number }}-${{ github.sha }}
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/python-tests
+        with:
+          app-path: app/${{ inputs.app }}
+
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/security-scans
+        with:
+          app-path: app/${{ inputs.app }}
+          iac-paths: ${{ inputs.chart }}
+
+  dast:
+    name: dast (OWASP ZAP, ephemeral)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/dast-zap
+        with:
+          app: ${{ inputs.app }}
+          mode: ephemeral
+
+  build:
+    needs: [test, security, dast]
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: ./.github/actions/infra-outputs
+        with:
+          stack: aws
+
+      - name: docker build
+        run: |
+          echo "IMAGE=$TF_OUT_ECR_REGISTRY/agripulse/${{ inputs.app }}:$TAG" >> "$GITHUB_ENV"
+          docker build -t "$TF_OUT_ECR_REGISTRY/agripulse/${{ inputs.app }}:$TAG" "app/${{ inputs.app }}"
+
+      - name: Trivy (fixable CRITICAL blocks)
+        run: |
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:0.76.0 image \
+            --severity CRITICAL --ignore-unfixed --exit-code 1 --no-progress "$IMAGE"
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:0.76.0 image \
+            --severity HIGH --ignore-unfixed --exit-code 0 --no-progress "$IMAGE"
+
+      - name: Push, SBOM, sign, attest
+        run: |
+          set -euo pipefail
+          aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$TF_OUT_ECR_REGISTRY"
+          docker push "$IMAGE"
+          DIGEST_REF="${IMAGE%:*}@$(docker inspect --format '{{index .RepoDigests 0}}' "$IMAGE" | cut -d@ -f2)"
+
+          curl -sSfL https://raw.githubusercontent.com/anchore/syft/v1.54.1/install.sh | sudo sh -s -- -b /usr/local/bin v1.54.1
+          syft "$DIGEST_REF" -o cyclonedx-json=sbom.cdx.json
+
+          sudo curl -sSfLo /usr/local/bin/cosign https://github.com/sigstore/cosign/releases/download/v2.6.5/cosign-linux-amd64   # v2 line: stable key-based flags
+          sudo chmod +x /usr/local/bin/cosign
+          # The private key never leaves AWS KMS: cosign asks KMS to sign the digest (AWS credentials from OIDC)
+          KEY="$TF_OUT_COSIGN_KEY_URI"
+          cosign sign --yes --tlog-upload=false --key "$KEY" "$DIGEST_REF"
+          cosign attest --yes --tlog-upload=false --key "$KEY" --type cyclonedx --predicate sbom.cdx.json "$DIGEST_REF"
+          cosign verify --insecure-ignore-tlog --key "$KEY" "$DIGEST_REF" > /dev/null
+          echo "Signed and attested $DIGEST_REF" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: sbom-${{ inputs.app }}
+          path: sbom.cdx.json
+
+  gitops:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: agripulse-production   # required reviewers: Settings > Environments
+    permissions:
+      contents: write                   # the GITHUB_TOKEN pushes the tag commit
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+
+      - name: Commit the new tag (Argo CD syncs it)
+        env:
+          CHART: ${{ inputs.chart }}
+          APP: ${{ inputs.app }}
+        run: |
+          set -euo pipefail
+          sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/download/v4.54.1/yq_linux_amd64 && sudo chmod +x /usr/local/bin/yq
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # Pushes made with the GITHUB_TOKEN start no new workflow run; [skip ci] says so to readers too
+          for attempt in 1 2 3; do
+            git pull --ff-only origin main
+            yq -i '.image.tag = strenv(TAG)' "$CHART/values.yaml"
+            git commit -am "ci: deploy $APP $TAG [skip ci]" || { echo "tag already set"; exit 0; }
+            git push origin HEAD:main && exit 0
+            echo "main moved on: retrying ($attempt/3)"; git reset --hard origin/main
+          done
+          echo "::error::Could not push the GitOps commit"; exit 1
+
+  observe:
+    needs: gitops
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: ./.github/actions/infra-outputs
+        with:
+          stack: aws
+
+      - name: Wait for the rollout (canary analysis decides)
+        env:
+          WORKLOAD: ${{ inputs.workload }}
+          NS: ${{ inputs.namespace }}
+        run: |
+          set -euo pipefail
+          aws eks update-kubeconfig --region "$AWS_REGION" --name "$TF_OUT_CLUSTER_NAME"
+          for i in $(seq 1 50); do      # wait until Argo CD has applied the new image
+            IMAGE=$(kubectl get "$WORKLOAD" -n "$NS" -o jsonpath='{.spec.template.spec.containers[0].image}' || true)
+            case "$IMAGE" in *":$TAG") break ;; esac
+            echo "waiting for Argo CD to apply $TAG (current: ${IMAGE##*:})"; sleep 30
+          done
+          if [ "${WORKLOAD%%/*}" = "deployment" ]; then
+            kubectl rollout status "$WORKLOAD" -n "$NS" --timeout=10m && exit 0
+            echo "::error::Deployment did not become ready (an unsigned image is rejected by Kyverno: kubectl get events -n $NS)"; exit 1
+          fi
+          for i in $(seq 1 40); do      # Argo Rollouts: the canary analysis decides
+            PHASE=$(kubectl get "$WORKLOAD" -n "$NS" -o jsonpath='{.status.phase}')
+            echo "rollout phase: ${PHASE:-unknown}"
+            [ "$PHASE" = "Healthy" ] && { echo "Rolled out $TAG" | tee -a "$GITHUB_STEP_SUMMARY"; exit 0; }
+            [ "$PHASE" = "Degraded" ] && { echo "::error::Canary aborted by the automated analysis (rolled back)"; exit 1; }
+            sleep 30
+          done
+          echo "::error::Rollout did not finish in time"; exit 1
+
+  dast-production:
+    name: dast-production (OWASP ZAP baseline)
+    needs: observe
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: ./.github/actions/infra-outputs
+        with:
+          stack: aws
+
+      - uses: ./.github/actions/dast-zap
+        with:
+          app: ${{ inputs.app }}
+          mode: production
+          target-url: ${{ env[inputs.url-env] }}
+
+  diagnose:
+    needs: [test, security, dast, build, gitops, observe, dast-production]
+    if: failure()
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      checks: read
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/ai-diagnosis
+        with:
+          anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+          slack-webhook-url: ${{ secrets.SLACK_WEBHOOK_URL }}

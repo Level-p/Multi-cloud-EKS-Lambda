@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block title %}#{{ inc.id }} {{ inc.title }}{% endblock %}
+{% block content %}
+<p><a href="/">← All incidents</a></p>
+<h1>#{{ inc.id }} {{ inc.title }}</h1>
+<p><span class="sev-{{ inc.severity }}">{{ inc.severity }}</span> · <span class="state {{ inc.state }}">{{ LABELS[inc.state] }}</span>
+   · commander {{ inc.commander }} · services: {{ inc.services or "–" }}</p>
+<h2>Timeline</h2>
+{% for p in posts %}
+  <article class="post">
+    <div class="meta">{{ p.at.strftime("%Y-%m-%d %H:%M") }} · {{ p.author }}
+      {% if p.state_to %} · <strong>{{ LABELS[p.state_from] ~ " → " if p.state_from else "" }}{{ LABELS[p.state_to] }}</strong>{% endif %}</div>
+    {{ p.body | markdown }}
+  </article>
+{% endfor %}
+{% if inc.review %}<h2>Post-incident review</h2><article class="post">{{ inc.review | markdown }}</article>{% endif %}
+{% if next_states %}
+<h2>Move to the next phase</h2>
+<form method="post" action="/incidents/{{ inc.id }}/transition" class="stack">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  <select name="to">{% for s in next_states %}<option value="{{ s }}">{{ LABELS[s] }}</option>{% endfor %}</select>
+  <textarea name="note" required placeholder="What was done and why (becomes a timeline post)"></textarea>
+  {% if "closed" in next_states or "post_incident_review" in next_states %}
+  <textarea name="review" placeholder="Post-incident review: summary, root and contributing causes, what went well, actions with owners">{{ inc.review or "" }}</textarea>
+  {% endif %}
+  <button type="submit">Record transition</button>
+</form>
+{% endif %}
+<h2>Add an update</h2>
+<form method="post" action="/incidents/{{ inc.id }}/posts" class="stack">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  <textarea name="body" required placeholder="Status update (Markdown)"></textarea>
+  <button type="submit">Post update</button>
+</form>
+{% endblock %}

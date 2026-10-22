@@ -1,0 +1,5 @@
+# Runtime dependencies packaged with the Lambda (pinned, hash-locked in requirements.txt)
+pydantic==2.14.1
+sqlalchemy==2.1.6
+psycopg[binary]==3.3.6
+boto3==1.43.117

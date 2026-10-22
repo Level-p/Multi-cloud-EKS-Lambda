@@ -1,0 +1,9 @@
+# Scripts run on Linux agents and in Git Bash: keep LF line endings even when checked out on Windows
+# (a CRLF script fails with "$'\r': command not found").
+*.sh    text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
+*.tf    text eol=lf
+*.py    text eol=lf
+*.docx  binary
+*.png   binary

@@ -1,0 +1,32 @@
+# Reads the Terraform outputs of infra/aws or infra/platform straight from their state in S3, so no registry
+# name, cluster name or URL has to be copied into GitHub by hand after a deployment.
+# Sets TF_OUT_<OUTPUT NAME> environment variables (non-sensitive single-line string outputs), e.g.
+#   aws: TF_OUT_ECR_REGISTRY, TF_OUT_CLUSTER_NAME, TF_OUT_COSIGN_KEY_URI, TF_OUT_WEB_URL, TF_OUT_INCIDENT_BLOG_URL,
+#        TF_OUT_MOBILE_API_URL, TF_OUT_LAMBDA_FUNCTION_NAME, TF_OUT_CANARY_ALARM
+# Needs AWS credentials first.
+name: Infrastructure outputs
+description: Terraform outputs from the remote state as TF_OUT_* environment variables
+inputs:
+  stack:
+    description: aws | platform
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Read the ${{ inputs.stack }} Terraform outputs
+      shell: bash
+      env:
+        STACK: ${{ inputs.stack }}
+      run: |
+        set -euo pipefail
+        STATE="$RUNNER_TEMP/$STACK.tfstate"
+        aws s3 cp --only-show-errors "s3://mfon21-agripulse-tfstate/eks/$STACK.tfstate" "$STATE"
+        OUTPUTS=$(jq -r '(.outputs // {}) | to_entries[]
+          | select(.value.type == "string" and (.value.sensitive | not))
+          | select(.value.value | contains("\n") | not)   # multi-line values (the PEM key) cannot be a GITHUB_ENV line
+          | "TF_OUT_\(.key | ascii_upcase)=\(.value.value)"' "$STATE")
+        rm -f "$STATE"      # the state holds secrets: keep only the outputs
+        if [ -z "$OUTPUTS" ]; then
+          echo "::error::infra/$STACK has no outputs yet: run its workflow first."; exit 1
+        fi
+        echo "$OUTPUTS" | tee -a "$GITHUB_ENV"

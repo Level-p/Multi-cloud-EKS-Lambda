@@ -1,0 +1,6 @@
+apiVersion: v2
+name: incident-blog
+description: AgriPulse incident-response blog on EKS (namespace incident-response) - incident lifecycle tracking, Alertmanager and CloudWatch webhooks, oauth2-proxy (Cognito) behind CloudFront + ALB, Secrets Manager CSI, RDS PostgreSQL with IAM authentication
+type: application
+version: 1.0.0
+appVersion: "1.0.0"

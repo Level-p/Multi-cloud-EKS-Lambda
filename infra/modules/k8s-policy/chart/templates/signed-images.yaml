@@ -1,0 +1,35 @@
+# Every agripulse/* image from our ECR must carry a Cosign signature made with the AWS KMS key (the pipeline signs
+# each digest after Trivy). The signatures are not in a public transparency log (--tlog-upload=false), so the
+# Rekor and SCT checks are off and the key alone is the trust anchor.
+{{- if not .Values.cosignPublicKey }}{{ fail "cosignPublicKey is required" }}{{ end }}
+apiVersion: policies.kyverno.io/v1
+kind: ImageValidatingPolicy
+metadata:
+  name: agripulse-signed-images
+spec:
+  validationActions: [{{ .Values.signatureAction }}]
+  failurePolicy: Fail
+  evaluation:
+    background:
+      enabled: false   # admission only: the reports controller has no registry credentials
+  matchConstraints:
+    {{- include "policies.match" . | nindent 4 }}
+  matchImageReferences:
+    - glob: {{ printf "%s/agripulse/*" .Values.registry | quote }}
+  credentials:
+    providers: [amazon]   # ECR, with the admission controller's Pod Identity role
+  attestors:
+    - name: cosign
+      cosign:
+        key:
+          data: |
+            {{- .Values.cosignPublicKey | trim | nindent 12 }}
+        ctlog:
+          insecureIgnoreTlog: true
+          insecureIgnoreSCT: true
+  validations:
+    - expression: >-
+        images.containers.filter(i, i.startsWith({{ printf "'%s/agripulse/'" .Values.registry }}))
+          .all(i, verifyImageSignatures(i, [attestors.cosign]) > 0)
+      message: "an agripulse image is not signed with the AgriPulse Cosign key (KMS alias agripulse-cosign)"
+      reason: Forbidden

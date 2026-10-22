@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}AgriPulse{% endblock %}</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header>
+    <a class="brand" href="/">AgriPulse</a>
+    <span class="who">Signed in as {{ user }}</span>
+  </header>
+  <main>{% block content %}{% endblock %}</main>
+  <footer>AgriPulse web · EKS · PostgreSQL (RDS) + Redis cache · protected by AWS WAF</footer>
+</body>
+</html>

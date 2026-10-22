@@ -1,0 +1,5 @@
+apiVersion: v2
+name: supply-chain-policies
+description: Kyverno admission policies for the AgriPulse app namespaces - allowed images, Cosign signatures (AWS KMS key)
+type: application
+version: 1.0.0

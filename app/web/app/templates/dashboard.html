@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block content %}
+<section>
+  <h1>Market prices</h1>
+  <table>
+    <thead><tr><th>Crop</th><th>Market</th><th>Price / tonne</th><th>Date</th></tr></thead>
+    <tbody>
+    {% for p in prices %}
+      <tr><td>{{ p.crop }}</td><td>{{ p.market }}</td><td>{{ "%.2f"|format(p.price_per_tonne) }} {{ p.currency }}</td><td>{{ p.on }}</td></tr>
+    {% else %}
+      <tr><td colspan="4">No prices published yet.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</section>
+<section>
+  <h1>Farms</h1>
+  <table>
+    <thead><tr><th>Farm</th><th>Region</th><th>Hectares</th><th>Harvested (t)</th></tr></thead>
+    <tbody>
+    {% for f in farms %}
+      <tr><td><a href="/farms/{{ f.id }}">{{ f.name }}</a></td><td>{{ f.region }}</td><td>{{ f.hectares }}</td><td>{{ f.total_tonnes }}</td></tr>
+    {% else %}
+      <tr><td colspan="4">No farms yet.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  <form method="post" action="/farms" class="inline">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <input name="name" placeholder="Farm name" required maxlength="100">
+    <input name="region" placeholder="Region" required maxlength="60">
+    <input name="hectares" type="number" step="0.01" min="0.01" placeholder="Hectares" required>
+    <button type="submit">Add farm</button>
+  </form>
+</section>
+{% endblock %}

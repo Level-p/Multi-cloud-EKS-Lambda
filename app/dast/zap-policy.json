@@ -1,0 +1,5 @@
+{
+  "$comment": "DAST gate for app/dast/zap_gate.py. fail_on: low | medium | high. Each exception needs plugin_id (the ZAP rule id), reason, owner and expires (YYYY-MM-DD, at most 180 days ahead); optional uri_regex limits it to matching URLs. An expired exception stops applying, so the finding fails the build again until someone reviews it. Never add an exception for High findings without a security review recorded in the PR.",
+  "fail_on": "medium",
+  "exceptions": []
+}

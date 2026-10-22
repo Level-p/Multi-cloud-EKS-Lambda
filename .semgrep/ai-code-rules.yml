@@ -1,0 +1,174 @@
+# Semgrep rules for mistakes that AI coding assistants commonly produce in Python
+# services. They run on every pull request (security.yml); on PRs labelled
+# "ai-assisted" any ERROR finding blocks the merge.
+rules:
+  - id: ai-subprocess-shell-true
+    languages: [python]
+    severity: ERROR
+    message: "subprocess with shell=True runs a shell: command injection if any part is user-controlled. Pass a list and shell=False."
+    metadata: { cwe: "CWE-78", owasp: "A05:2025 Injection" }
+    pattern-either:
+      - pattern: subprocess.$F(..., shell=True, ...)
+      - pattern: os.system(...)
+      - pattern: os.popen(...)
+
+  - id: ai-eval-exec
+    languages: [python]
+    severity: ERROR
+    message: "eval/exec run arbitrary code. Parse the data instead (json.loads, ast.literal_eval)."
+    metadata: { cwe: "CWE-95" }
+    pattern-either:
+      - pattern: eval(...)
+      - pattern: exec(...)
+
+  - id: ai-unsafe-deserialisation
+    languages: [python]
+    severity: ERROR
+    message: "Unsafe deserialisation: pickle/marshal or yaml.load without SafeLoader can execute code. Use json or yaml.safe_load."
+    metadata: { cwe: "CWE-502", owasp: "A08:2025 Software or Data Integrity Failures" }
+    pattern-either:
+      - pattern: pickle.loads(...)
+      - pattern: pickle.load(...)
+      - pattern: marshal.loads(...)
+      - pattern: yaml.load($X)
+      - pattern: yaml.load($X, Loader=yaml.Loader)
+      - pattern: yaml.load($X, Loader=yaml.UnsafeLoader)
+
+  - id: ai-tls-verification-disabled
+    languages: [python]
+    severity: ERROR
+    message: "TLS certificate verification is disabled (verify=False): anyone on the path can read and change the traffic."
+    metadata: { cwe: "CWE-295" }
+    pattern-either:
+      - pattern: $CLIENT.$METHOD(..., verify=False, ...)
+      - pattern: httpx.Client(..., verify=False, ...)
+      - pattern: httpx.AsyncClient(..., verify=False, ...)
+      - pattern: ssl._create_unverified_context(...)
+
+  - id: ai-sql-built-with-strings
+    languages: [python]
+    severity: ERROR
+    message: "SQL built with string formatting: SQL injection. Use bound parameters (text(':x'), select(), cursor.execute(sql, params))."
+    metadata: { cwe: "CWE-89", owasp: "A05:2025 Injection" }
+    pattern-either:
+      - pattern: $DB.execute(f"...")
+      - pattern: $DB.execute("..." % ...)
+      - pattern: $DB.execute("...".format(...))
+      - pattern: $DB.execute("..." + ...)
+      - pattern: sqlalchemy.text(f"...")
+      - pattern: text(f"...")
+
+  - id: ai-hardcoded-secret
+    languages: [python]
+    paths:
+      exclude: ["tests/", "test_*.py", "conftest.py"]
+    severity: ERROR
+    message: "A secret looks hard-coded. Read it from the environment / a Kubernetes Secret, never from source code."
+    metadata: { cwe: "CWE-798" }
+    patterns:
+      - pattern: $NAME = "$VALUE"
+      - metavariable-regex:
+          metavariable: $NAME
+          regex: (?i).*(password|passwd|secret|api_?key|token|private_?key).*
+      - metavariable-regex:
+          metavariable: $VALUE
+          regex: ^[^\s]{12,}$
+
+  - id: ai-insecure-randomness-for-secrets
+    languages: [python]
+    severity: WARNING
+    message: "random is predictable. Use secrets.token_urlsafe / secrets.choice for tokens, ids and passwords."
+    metadata: { cwe: "CWE-338" }
+    patterns:
+      - pattern-either:
+          - pattern: random.choice(...)
+          - pattern: random.randint(...)
+          - pattern: random.random()
+      - pattern-inside: |
+          def $F(...):
+            ...
+      - metavariable-regex:
+          metavariable: $F
+          regex: (?i).*(token|secret|password|key|otp|nonce|session).*
+
+  - id: ai-jwt-signature-not-verified
+    languages: [python]
+    severity: ERROR
+    message: "JWT decoded without verifying the signature: anyone can forge the token."
+    metadata: { cwe: "CWE-347" }
+    pattern-either:
+      - pattern: |
+          jwt.decode(..., options={..., "verify_signature": False, ...}, ...)
+      - pattern: jwt.decode(..., verify=False, ...)
+
+  - id: ai-cors-wildcard-with-credentials
+    languages: [python]
+    severity: ERROR
+    message: "CORS allows every origin together with credentials: any website can act as the logged-in user."
+    metadata: { cwe: "CWE-942" }
+    pattern: $APP.add_middleware(CORSMiddleware, ..., allow_origins=["*"], ..., allow_credentials=True, ...)
+
+  - id: ai-secret-compared-with-equals
+    languages: [python]
+    paths:
+      exclude: ["tests/", "test_*.py", "conftest.py"]
+    severity: WARNING
+    message: "Compare tokens with hmac.compare_digest (constant time), not ==, to avoid timing attacks."
+    metadata: { cwe: "CWE-208" }
+    patterns:
+      - pattern-either:
+          - pattern: $A == $B
+          - pattern: $A != $B
+      - metavariable-regex:
+          metavariable: $A
+          regex: (?i).*(token|secret|api_?key|password|signature).*
+
+  - id: ai-phi-in-logs
+    languages: [python]
+    severity: ERROR
+    message: "Possible patient data in logs : log opaque ids only, never names, addresses or contact details."
+    metadata: { cwe: "CWE-532" }
+    patterns:
+      - pattern-either:
+          - pattern: |
+              $LOG.$LEVEL(..., extra={..., "$KEY": $V, ...}, ...)
+          - pattern: $LOG.$LEVEL(f"...{$X.$KEY}...", ...)
+      - metavariable-regex:
+          metavariable: $LEVEL
+          regex: ^(debug|info|warning|error|exception|critical)$
+      - metavariable-regex:
+          metavariable: $KEY
+          regex: (?i)^(name|full_?name|first_?name|last_?name|dob|date_of_birth|address|email|phone|nhs_?number|ssn|pseudonym)$
+
+  # ---- LLM-specific (OWASP Top 10 for LLM applications) ----
+  - id: llm-output-executed
+    languages: [python]
+    severity: ERROR
+    message: "Model output reaches code execution or a shell (LLM05 improper output handling / LLM06 excessive agency). Treat model output as untrusted data; validate it against a schema and never execute it."
+    mode: taint
+    pattern-sources:
+      - pattern: $C.messages.create(...)
+      - pattern: $C.beta.messages.create(...)
+      - pattern: $C.messages.parse(...)
+      - pattern: $C.beta.messages.parse(...)
+      - pattern: await $C.messages.create(...)
+      - pattern: await $C.beta.messages.parse(...)
+    pattern-sinks:
+      - pattern: eval(...)
+      - pattern: exec(...)
+      - pattern: os.system(...)
+      - pattern: subprocess.$F(...)
+      - patterns:
+          - pattern: $K8S.$METHOD(...)
+          - metavariable-regex:
+              metavariable: $METHOD
+              regex: ^(delete|patch|replace|create)_namespaced_\w+$
+
+  - id: llm-api-key-in-code
+    languages: [python]
+    severity: ERROR
+    message: "API key passed literally to an LLM client. Let the SDK read ANTHROPIC_API_KEY from the environment (a Kubernetes Secret)."
+    metadata: { cwe: "CWE-798" }
+    pattern-either:
+      - pattern: anthropic.Anthropic(api_key="...")
+      - pattern: anthropic.AsyncAnthropic(api_key="...")

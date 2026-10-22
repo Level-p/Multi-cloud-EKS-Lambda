@@ -1,0 +1,51 @@
+# OWASP ZAP Automation Framework plan: BASELINE (passive, unauthenticated) scan of a deployed
+# AgriPulse endpoint, after the deployment stage:
+#   web, incident-blog   https://agripulse|incidents.<zone>: AWS WAF -> CloudFront -> ALB -> EKS -> oauth2-proxy
+#   mobile-backend       https://api.<zone>: AWS WAF -> CloudFront -> API Gateway (Cognito authorizer) -> Lambda
+# Nothing is attacked and nothing is written. It proves what only the real edge can show: TLS and
+# HTTPS redirects, security headers after CloudFront, the sign-in redirect and its
+# cookies (oauth2-proxy), that protected routes answer 401/302 instead of data, CORS, error pages
+# and server banners. An authenticated production scan would need a dedicated test identity in
+# Cognito: see app/dast/README.md.
+#
+# Inputs: TARGET_URL, APP, DAST_DIR
+env:
+  contexts:
+    - name: agripulse-prod
+      urls: ["${TARGET_URL}"]
+      includePaths: ["${TARGET_URL}.*"]
+  parameters:
+    failOnError: true
+    failOnWarning: false
+    progressToStdout: true
+
+jobs:
+  - type: spider
+    parameters:
+      context: agripulse-prod
+      maxDuration: 2
+      maxDepth: 3
+
+  - type: passiveScan-wait
+    parameters:
+      maxDuration: 10
+
+  - type: report
+    parameters:
+      template: traditional-json
+      reportDir: "${DAST_DIR}/reports"
+      reportFile: zap-report.json
+    risks: [info, low, medium, high]
+  - type: report
+    parameters:
+      template: sarif-json
+      reportDir: "${DAST_DIR}/reports"
+      reportFile: zap-report.sarif.json
+    risks: [low, medium, high]
+  - type: report
+    parameters:
+      template: traditional-html
+      reportDir: "${DAST_DIR}/reports"
+      reportFile: zap-report.html
+      reportTitle: "AgriPulse ${APP}: DAST baseline (production)"
+    risks: [info, low, medium, high]

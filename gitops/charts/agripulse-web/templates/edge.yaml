@@ -1,0 +1,114 @@
+# Request path: AWS WAF -> CloudFront -> ALB (infra/modules/edge, host agripulse.<zone>) -> oauth2-proxy (Cognito sign-in) -> agripulse-web
+#
+# Terraform owns the ALB and its target group; this TargetGroupBinding asks the AWS Load Balancer Controller to
+# keep the target group filled with the IPs of the oauth2-proxy pods (target type ip: straight to the pods).
+{{- if not .Values.aws.targetGroupArn }}
+{{- fail "aws.targetGroupArn is required (Terraform passes it through the Argo CD Application)" }}
+{{- end }}
+apiVersion: elbv2.k8s.aws/v1beta1
+kind: TargetGroupBinding
+metadata:
+  name: agripulse-web
+  labels: {{- include "web.labels" . | nindent 4 }}
+spec:
+  targetGroupARN: {{ .Values.aws.targetGroupArn | quote }}
+  targetType: ip
+  serviceRef: { name: oauth2-proxy, port: 4180 }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: oauth2-proxy
+  labels: {{- include "web.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.oauth2Proxy.replicas }}
+  selector: { matchLabels: { app.kubernetes.io/name: oauth2-proxy } }
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: oauth2-proxy
+        {{- include "web.labels" . | nindent 8 }}
+    spec:
+      serviceAccountName: agripulse-web      # same identity: reads its secrets from Secrets Manager
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: oauth2-proxy
+          image: {{ .Values.oauth2Proxy.image }}
+          args:
+            {{- include "web.oauth2Args" . | nindent 12 }}
+            - --upstream=http://agripulse-web:8080
+            - --http-address=0.0.0.0:4180
+            - --reverse-proxy=true
+            - --pass-user-headers=true
+            - --cookie-secure=true
+            - --cookie-samesite=lax
+            - --cookie-expire=8h
+            - --skip-provider-button=true
+            - --redirect-url=https://{{ .Values.host }}/oauth2/callback
+          env:
+            - name: OAUTH2_PROXY_CLIENT_SECRET
+              valueFrom: { secretKeyRef: { name: agripulse-web-secrets, key: oauth2-client-secret } }
+            - name: OAUTH2_PROXY_COOKIE_SECRET
+              valueFrom: { secretKeyRef: { name: agripulse-web-secrets, key: cookie-secret } }
+          ports: [{ name: http, containerPort: 4180 }]
+          readinessProbe: { httpGet: { path: /ping, port: http } }
+          livenessProbe: { httpGet: { path: /ping, port: http } }
+          resources:
+            requests: { cpu: 20m, memory: 32Mi }
+            limits: { memory: 128Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          volumeMounts: [{ name: secrets, mountPath: /mnt/secrets, readOnly: true }]
+      volumes:
+        {{- include "web.secretsVolume" . | nindent 8 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: oauth2-proxy
+spec:
+  selector: { app.kubernetes.io/name: oauth2-proxy }
+  ports: [{ name: http, port: 4180, targetPort: http }]
+---
+# Zero trust inside the namespace (enforced by the VPC CNI's network policy agent)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+spec:
+  podSelector: {}
+  policyTypes: [Ingress]
+---
+# The ALB connects to the pod IPs from its own addresses in the public subnets (it admits CloudFront only)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: oauth2-proxy-from-alb
+spec:
+  podSelector: { matchLabels: { app.kubernetes.io/name: oauth2-proxy } }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        {{- range .Values.aws.albSourceCidrs }}
+        - ipBlock: { cidr: {{ . | quote }} }
+        {{- end }}
+      ports: [{ port: 4180, protocol: TCP }]
+---
+# Only oauth2-proxy (which sets the signed-in user's headers) and Prometheus reach the app
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: web-from-oauth2-proxy-and-prometheus
+spec:
+  podSelector: { matchLabels: { app.kubernetes.io/name: agripulse-web } }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector: { matchLabels: { app.kubernetes.io/name: oauth2-proxy } }
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: monitoring } }
+      ports: [{ port: 8080, protocol: TCP }]

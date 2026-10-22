@@ -1,0 +1,122 @@
+# OWASP ZAP Automation Framework plan: FULL scan (passive + active) of ONE AgriPulse app
+# started inside the pipeline job with throwaway data (web / incident-blog: uvicorn + SQLite;
+# mobile-backend: the real request handler behind a local API Gateway stand-in, SQLite + moto).
+# Active scanning sends attack payloads and writes data: never against production
+# (production gets prod-baseline.yaml).
+#
+# Inputs (environment variables):
+#   TARGET_URL  e.g. http://localhost:8080
+#   SPEC        OpenAPI file in $DAST_DIR/openapi/ (exported from the app's own code)
+#   APP         web | incident-blog | mobile-backend (report title)
+#   DAST_DIR    folder with openapi/ and reports/
+# Identity: the app runs with DEV_USER (web, incident-blog) or a fixed Cognito "sub" (mobile), the
+# same thing oauth2-proxy (EKS) / API Gateway's Cognito authorizer provide in production.
+env:
+  contexts:
+    - name: agripulse
+      urls: ["${TARGET_URL}"]
+      includePaths: ["${TARGET_URL}.*"]
+      excludePaths:
+        - ".*/healthz.*"
+        - ".*/readyz.*"
+        - ".*/metrics.*"
+  parameters:
+    failOnError: true
+    failOnWarning: false
+    progressToStdout: true
+
+jobs:
+  # mobile-backend: the API Gateway stand-in wants a bearer token, as the Cognito authorizer does
+  # (web and incident-blog ignore it: oauth2-proxy's identity comes from DEV_USER here)
+  - type: replacer
+    parameters:
+      deleteAllRules: true
+    rules:
+      - description: test identity
+        matchType: req_header
+        matchString: Authorization
+        matchRegex: false
+        replacementString: "Bearer dast-ephemeral-identity"
+
+  # Triaged false positives, as narrow as possible (rule + URL + parameter + attack), reviewed in
+  # the PR like code. ZAP reports them as "False Positive" and the gate ignores them.
+  - type: alertFilter
+    alertFilters:
+      # SQL Injection (rule 40018, boolean-based) on web /api/prices: ZAP compared "%" with
+      # "XYZABCDEFGHIJ"; "%" is rejected by the crop allow-list (400 "invalid crop") and the other
+      # value is a valid, unknown crop (200, empty list). The query is a bound SQLAlchemy
+      # parameter (MarketPrice.crop == crop, no LIKE). Reviewed 2026-10-18.
+      - ruleId: 40018
+        newRisk: False Positive
+        url: ".*/api/prices.*"
+        urlRegex: true
+        parameter: '^(crop|on)$'
+        parameterRegex: true
+        attack: '.*%$'
+        attackRegex: true
+
+  - type: openapi
+    parameters:
+      apiFile: "${DAST_DIR}/openapi/${SPEC}"
+      targetUrl: "${TARGET_URL}"
+      context: agripulse
+
+  # HTML pages and their forms (the CSRF-protected ones are submitted with the page's token)
+  - type: spider
+    parameters:
+      context: agripulse
+      maxDuration: 2
+      maxDepth: 5
+
+  - type: passiveScan-wait
+    parameters:
+      maxDuration: 5
+
+  - type: activeScan
+    parameters:
+      context: agripulse
+      maxRuleDurationInMins: 3
+      maxScanDurationInMins: 20
+      threadPerHost: 4
+    policyDefinition:
+      defaultStrength: medium
+      defaultThreshold: medium
+      rules:
+        # The ephemeral app speaks plain HTTP on the agent; TLS is tested by the deployed baseline
+        - { id: 10106, name: HTTP Only Site, threshold: "off" }
+        # PostgreSQL is the only database: the other SQL dialects do not apply
+        - { id: 40019, name: SQL Injection - MySQL, threshold: "off" }
+        - { id: 40020, name: SQL Injection - Hypersonic SQL, threshold: "off" }
+        - { id: 40021, name: SQL Injection - Oracle, threshold: "off" }
+        - { id: 40022, name: SQL Injection - PostgreSQL, threshold: "off" }
+        - { id: 40018, name: SQL Injection, strength: high }
+        - { id: 40027, name: SQL Injection - MsSQL, strength: high }
+        - { id: 40012, name: Cross Site Scripting (Reflected), strength: high }
+        - { id: 40014, name: Cross Site Scripting (Persistent), strength: high }   # Markdown notes in the incident blog
+        - { id: 90019, name: Server Side Code Injection, strength: high }
+        - { id: 90035, name: Server Side Template Injection, strength: high }      # Jinja2 templates
+        - { id: 6, name: Path Traversal, strength: high }
+
+  - type: passiveScan-wait
+    parameters:
+      maxDuration: 5
+
+  - type: report
+    parameters:
+      template: traditional-json
+      reportDir: "${DAST_DIR}/reports"
+      reportFile: zap-report.json
+    risks: [info, low, medium, high]
+  - type: report
+    parameters:
+      template: sarif-json
+      reportDir: "${DAST_DIR}/reports"
+      reportFile: zap-report.sarif.json
+    risks: [low, medium, high]
+  - type: report
+    parameters:
+      template: traditional-html
+      reportDir: "${DAST_DIR}/reports"
+      reportFile: zap-report.html
+      reportTitle: "AgriPulse ${APP}: DAST full scan (ephemeral)"
+    risks: [info, low, medium, high]
