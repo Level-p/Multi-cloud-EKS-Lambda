@@ -34,9 +34,15 @@ resource "aws_vpc_security_group_ingress_rule" "clients" {
   ip_protocol                  = "tcp"
 }
 
+# name_prefix: a generated name, so a group left behind by a failed apply never blocks the next one, and a
+# change that replaces the group creates the new one before the instance moves off the old one
 resource "aws_db_parameter_group" "this" {
-  name   = "${var.name}-postgres18"
-  family = "postgres18"
+  name_prefix = "${var.name}-postgres18-"
+  family      = "postgres18"
+
+  lifecycle {
+    create_before_destroy = true
+  }
 
   parameter {
     name  = "rds.force_ssl"
