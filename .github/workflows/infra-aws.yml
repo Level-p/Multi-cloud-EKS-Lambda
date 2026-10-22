@@ -82,7 +82,7 @@ jobs:
       - name: Preflight (AWS checks the apply would hit)
         working-directory: ${{ env.TF_DIR }}
         run: |
-          python -m pip install --quiet pytest==9.1.1 && python -m pytest -q "$GITHUB_WORKSPACE/.github/scripts/test_tf_preflight.py"
+          python -m pip install --quiet pytest==9.1.1 pyyaml==6.0.3 && python -m pytest -q "$GITHUB_WORKSPACE/.github/scripts/test_tf_preflight.py"
           terraform show -json tfplan > tfplan.json
           python "$GITHUB_WORKSPACE/.github/scripts/tf_preflight.py" tfplan.json
 

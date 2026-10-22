@@ -75,7 +75,7 @@ jobs:
       - name: Preflight (AWS checks the apply would hit)
         working-directory: ${{ env.TF_DIR }}
         run: |
-          python -m pip install --quiet pytest==9.1.1 && python -m pytest -q "$GITHUB_WORKSPACE/.github/scripts/test_tf_preflight.py"
+          python -m pip install --quiet pytest==9.1.1 pyyaml==6.0.3 && python -m pytest -q "$GITHUB_WORKSPACE/.github/scripts/test_tf_preflight.py"
           terraform show -json tfplan > tfplan.json
           python "$GITHUB_WORKSPACE/.github/scripts/tf_preflight.py" tfplan.json
 
@@ -121,6 +121,30 @@ jobs:
             echo "- Image signatures: $(terraform output -raw image_signature_mode)"
             echo "- Next (first deployment): run **web**, **incident-blog** and **mobile-backend**"
           } >> "$GITHUB_STEP_SUMMARY"
+
+      # A Helm release whose pods never get ready fails with only "context deadline exceeded". Print WHY (pods
+      # not ready, their container states and events, failed releases) at the end of the log, where the AI
+      # diagnosis reads it.
+      - uses: ./.github/actions/infra-outputs
+        if: failure()
+        with:
+          stack: aws
+
+      - name: Cluster state (only when the apply failed)
+        if: failure()
+        run: |
+          aws eks update-kubeconfig --name "$TF_OUT_CLUSTER_NAME" --region "$AWS_REGION" >/dev/null
+          echo "Helm releases not deployed:"
+          helm list -A --all -o json | jq -r '.[] | select(.status != "deployed") | "  \(.namespace)/\(.name): \(.status)"'
+          echo "Pods not ready (container state, reason, message):"
+          kubectl get pods -A -o json | jq -r '.items[]
+            | select(.status.phase != "Succeeded")
+            | select(([.status.containerStatuses[]?.ready] | all | not) or .status.phase == "Pending")
+            | "  \(.metadata.namespace)/\(.metadata.name) \(.status.phase): " +
+              ([.status.containerStatuses[]? | select(.ready | not)
+                | "\(.name) \(.state | keys[0]) \(.state[].reason // "") \(.state[].message // "")"] | join("; "))' | head -20
+          echo "Warning events (latest 25):"
+          kubectl get events -A --field-selector type=Warning --sort-by=.lastTimestamp -o custom-columns=NS:.metadata.namespace,OBJECT:.involvedObject.name,REASON:.reason,MESSAGE:.message --no-headers | tail -25
 
   diagnose:
     needs: [plan, apply]

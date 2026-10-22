@@ -217,8 +217,12 @@ resource "helm_release" "yace" {
     serviceAccount = { create = true, name = "yace" } # Pod Identity association by this name
     serviceMonitor = { enabled = true, interval = "60s", timeout = "50s" }
     resources      = { requests = { cpu = "20m", memory = "64Mi" }, limits = { memory = "256Mi" } }
+    # The image's USER is "nobody", a name: with runAsNonRoot the kubelet cannot prove a name is not root and
+    # refuses to start the container, so the numeric id (nobody = 65534) is required
     securityContext = { readOnlyRootFilesystem = true, allowPrivilegeEscalation = false, runAsNonRoot = true,
-    capabilities = { drop = ["ALL"] } }
+    runAsUser = 65534, runAsGroup = 65534, capabilities = { drop = ["ALL"] } }
+    # The role is read-only CloudWatch/tagging: no iam:ListAccountAliases (the account_alias label stays empty)
+    extraArgs = { "disable-account-alias-lookup" = "true" }
     config = yamlencode({
       apiVersion = "v1alpha1"
       sts-region = var.region

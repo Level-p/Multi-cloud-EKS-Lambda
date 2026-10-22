@@ -12,6 +12,9 @@ read-only APIs the same questions the apply would:
                    with a sample event built from the pattern; the pattern must match it
   name-taken       a resource Terraform will CREATE with a fixed name already exists in AWS (left by a failed
                    apply, or made by hand): prints the terraform import command
+  helm-pods        every Helm release is rendered (helm template, the planned values) and each container's
+                   runAsNonRoot/runAsUser is compared with its image's USER (read from the registry): the kubelet
+                   refuses root or a NAMED user, and Terraform would only report "context deadline exceeded"
 
 Usage: tf_preflight.py tfplan.json     (AWS credentials and AWS_REGION in the environment)
 Exit 1 with ::error annotations and a table on the run's summary page when something would fail.
@@ -22,6 +25,11 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
+import urllib.error
+import urllib.request
+
+import yaml
 
 SG_TYPES = {"aws_security_group", "aws_security_group_rule",
             "aws_vpc_security_group_ingress_rule", "aws_vpc_security_group_egress_rule"}
@@ -257,7 +265,149 @@ def check_names_taken(plan, run=aws):
     return errors
 
 
-CHECKS = [check_db_parameters, check_sg_descriptions, check_event_patterns, check_names_taken]
+# ---------------------------------------------------------------------------------------------------------
+# Helm releases: pods the kubelet will refuse to start
+# ---------------------------------------------------------------------------------------------------------
+POD_KINDS = {"Deployment", "StatefulSet", "DaemonSet", "ReplicaSet", "Job", "Rollout"}
+
+
+def helm(args):
+    p = subprocess.run(["helm", *args], capture_output=True, text=True)
+    return p.returncode, p.stdout, p.stderr.strip()
+
+
+def render_release(after, workdir, render=helm):
+    """helm template with the release's planned values: (manifests, error)."""
+    args = ["template", after.get("name") or "preflight"]
+    chart = after["chart"]
+    if after.get("repository"):
+        args += [chart, "--repo", after["repository"]]
+    else:
+        args += [os.path.join(workdir, chart)]   # local chart, relative to the stack directory
+    if after.get("version"):
+        args += ["--version", after["version"]]
+    args += ["--namespace", after.get("namespace") or "default", "--skip-tests"]
+    with tempfile.TemporaryDirectory() as tmp:
+        for i, v in enumerate(after.get("values") or []):
+            path = os.path.join(tmp, f"values-{i}.yaml")
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(v)
+            args += ["-f", path]
+        for s in after.get("set") or []:
+            args += ["--set-string" if s.get("type") == "string" else "--set", f"{s['name']}={s['value']}"]
+        code, out, err = render(args)
+    return (out, None) if code == 0 else (None, err)
+
+
+def pod_specs(manifests):
+    """(kind/name, pod spec) of every workload in a multi-document YAML stream."""
+    for doc in yaml.safe_load_all(manifests):
+        if not isinstance(doc, dict):
+            continue
+        spec = doc.get("spec") or {}
+        if doc.get("kind") == "CronJob":
+            spec = ((spec.get("jobTemplate") or {}).get("spec") or {})
+        elif doc.get("kind") not in POD_KINDS:
+            continue
+        pod = ((spec.get("template") or {}).get("spec"))
+        if pod:
+            yield f"{doc['kind']}/{(doc.get('metadata') or {}).get('name')}", pod
+
+
+def image_ref(image):
+    """registry, repository, tag-or-digest (Docker Hub names expanded)."""
+    name, ref = image, "latest"
+    if "@" in name:
+        name, ref = name.split("@", 1)
+    elif ":" in name.rsplit("/", 1)[-1]:
+        name, ref = name.rsplit(":", 1)
+    first = name.split("/", 1)[0]
+    if "/" in name and ("." in first or ":" in first or first == "localhost"):
+        registry, repo = name.split("/", 1)
+    else:
+        registry, repo = "registry-1.docker.io", name if "/" in name else f"library/{name}"
+    return ("registry-1.docker.io" if registry == "docker.io" else registry), repo, ref
+
+
+def image_user(image, _cache={}):
+    """The image's configured USER from its registry (anonymous pull token), or raises."""
+    if image in _cache:
+        return _cache[image]
+    registry, repo, ref = image_ref(image)
+    base = f"https://{registry}/v2/{repo}"
+    accept = ", ".join(["application/vnd.oci.image.index.v1+json", "application/vnd.docker.distribution.manifest.list.v2+json",
+                        "application/vnd.oci.image.manifest.v1+json", "application/vnd.docker.distribution.manifest.v2+json"])
+    headers = {}
+
+    def get(url, acc):
+        req = urllib.request.Request(url, headers={"Accept": acc, **headers})
+        try:
+            with urllib.request.urlopen(req, timeout=20) as r:
+                return json.load(r)
+        except urllib.error.HTTPError as e:
+            challenge = e.headers.get("WWW-Authenticate", "")
+            if e.code != 401 or "Authorization" in headers or not challenge.lower().startswith("bearer"):
+                raise
+            params = dict(re.findall(r'(\w+)="([^"]*)"', challenge))
+            q = "&".join(f"{k}={params[k]}" for k in ("service", "scope") if k in params)
+            with urllib.request.urlopen(f"{params['realm']}?{q or 'scope=repository:' + repo + ':pull'}", timeout=20) as r:
+                tok = json.load(r)
+            headers["Authorization"] = f"Bearer {tok.get('token') or tok.get('access_token')}"
+            return get(url, acc)
+
+    m = get(f"{base}/manifests/{ref}", accept)
+    if "manifests" in m:
+        d = next(x["digest"] for x in m["manifests"]
+                 if (x.get("platform") or {}).get("os") == "linux" and (x.get("platform") or {}).get("architecture") == "amd64")
+        m = get(f"{base}/manifests/{d}", accept)
+    cfg = get(f"{base}/blobs/{m['config']['digest']}", "*/*")
+    _cache[image] = (cfg.get("config") or {}).get("User") or ""
+    return _cache[image]
+
+
+def non_root_problem(container, pod, user_of):
+    """Why the kubelet will refuse to start this container under runAsNonRoot, or None."""
+    csc, psc = container.get("securityContext") or {}, pod.get("securityContext") or {}
+    non_root = csc.get("runAsNonRoot", psc.get("runAsNonRoot"))
+    uid = csc.get("runAsUser", psc.get("runAsUser"))
+    if not non_root:
+        return None
+    if uid is not None:
+        return "runAsUser: 0 with runAsNonRoot: the container would run as root" if int(uid) == 0 else None
+    user = user_of(container["image"]).split(":", 1)[0]
+    if user in ("", "0", "root"):
+        return f"image {container['image']} runs as root and no runAsUser is set"
+    if not user.isdigit():
+        return (f"image {container['image']} has USER {user!r} (a name): with runAsNonRoot the kubelet cannot verify it is "
+                f"not root and will not start the container; set runAsUser to its numeric id")
+    return None
+
+
+def check_helm_pods(plan, run=None, render=helm, user_of=image_user, workdir="."):
+    errors = []
+    for addr, rtype, after, _ in changes(plan):
+        if rtype != "helm_release" or not isinstance(after.get("chart"), str):
+            continue
+        if any(not isinstance(v, str) for v in after.get("values") or []):
+            print(f"::warning::{addr}: values not known at plan time, pods not checked")
+            continue
+        manifests, err = render_release(after, workdir, render)
+        if manifests is None:
+            errors.append((addr, "helm-pods", f"helm template failed: {err}"))
+            continue
+        for workload, pod in pod_specs(manifests):
+            for c in (pod.get("initContainers") or []) + (pod.get("containers") or []):
+                try:
+                    why = non_root_problem(c, pod, user_of)
+                except Exception as e:   # registry unreachable: report, do not block
+                    print(f"::warning::{addr}: {workload}: cannot read the USER of {c.get('image')}: {e}")
+                    continue
+                if why:
+                    errors.append((addr, "helm-pods", f"{workload} container {c.get('name')}: {why}"))
+    return errors
+
+
+CHECKS = [check_db_parameters, check_sg_descriptions, check_event_patterns, check_names_taken, check_helm_pods]
 
 
 def main(path):

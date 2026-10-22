@@ -118,3 +118,74 @@ def test_main_writes_annotations_and_summary(tmp_path, monkeypatch, capsys):
     assert p.main(str(f)) == 1
     assert "::error title=preflight sg-description::" in capsys.readouterr().out
     assert "the apply would fail" in (tmp_path / "summary.md").read_text()
+
+
+# --- Helm releases: pods the kubelet refuses (the YACE release of the first platform run) -----------------
+YACE_DEPLOYMENT = """
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: yace}
+spec:
+  template:
+    spec:
+      containers:
+        - name: exporter
+          image: quay.io/prometheuscommunity/yet-another-cloudwatch-exporter:v0.68.0
+          securityContext: {runAsNonRoot: true%s}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: yace}
+"""
+
+
+def helm_plan(values="serviceAccount: {name: yace}"):
+    return plan("helm_release", {"name": "yace", "chart": "prometheus-yet-another-cloudwatch-exporter", "version": "0.48.0",
+                                 "repository": "https://prometheus-community.github.io/helm-charts", "namespace": "monitoring",
+                                 "values": [values]}, address="module.k8s_observability.helm_release.yace")
+
+
+def fake_helm(manifests, seen):
+    def render(args):
+        seen.append(args)
+        return 0, manifests, ""
+    return render
+
+
+def test_named_image_user_under_run_as_non_root_is_rejected():
+    seen = []
+    errs = p.check_helm_pods(helm_plan(), render=fake_helm(YACE_DEPLOYMENT % "", seen), user_of=lambda image: "nobody")
+    [(addr, check, msg)] = errs
+    assert addr.endswith("helm_release.yace") and check == "helm-pods" and "USER 'nobody' (a name)" in msg
+    args = seen[0]
+    assert args[:4] == ["template", "yace", "prometheus-yet-another-cloudwatch-exporter", "--repo"] and "-f" in args
+
+
+def test_numeric_run_as_user_passes_and_the_registry_is_not_asked():
+    def never(image):
+        raise AssertionError("registry asked")
+    assert p.check_helm_pods(helm_plan(), render=fake_helm(YACE_DEPLOYMENT % ", runAsUser: 65534", []), user_of=never) == []
+
+
+def test_root_images_and_uid_zero_are_rejected():
+    pod = {"securityContext": {"runAsNonRoot": True}}
+    assert "runs as root" in p.non_root_problem({"image": "x"}, pod, lambda i: "")
+    assert "runs as root" in p.non_root_problem({"image": "x"}, pod, lambda i: "0:0")
+    assert "runAsUser: 0" in p.non_root_problem({"image": "x", "securityContext": {"runAsUser": 0}}, pod, lambda i: "")
+    assert p.non_root_problem({"image": "x"}, pod, lambda i: "65532:65532") is None
+    assert p.non_root_problem({"image": "x"}, {}, lambda i: "root") is None   # runAsNonRoot not asked for
+
+
+def test_image_references():
+    assert p.image_ref("redis") == ("registry-1.docker.io", "library/redis", "latest")
+    assert p.image_ref("bitnami/redis:7") == ("registry-1.docker.io", "bitnami/redis", "7")
+    assert p.image_ref("quay.io/a/b:v1") == ("quay.io", "a/b", "v1")
+    assert p.image_ref("registry.k8s.io/x/y@sha256:ab") == ("registry.k8s.io", "x/y", "sha256:ab")
+    assert p.image_ref("localhost:5000/z:1") == ("localhost:5000", "z", "1")
+
+
+def test_failed_render_is_an_error_and_unknown_values_are_skipped():
+    errs = p.check_helm_pods(helm_plan(), render=lambda args: (1, "", "chart not found"), user_of=lambda i: "")
+    assert errs and "helm template failed: chart not found" in errs[0][2]
+    unknown = helm_plan(); unknown["resource_changes"][0]["change"]["after"]["values"] = [None]
+    assert p.check_helm_pods(unknown, render=lambda a: (_ for _ in ()).throw(AssertionError()), user_of=lambda i: "") == []

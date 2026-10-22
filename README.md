@@ -67,6 +67,6 @@ docs/                the Deployment Guide and the App Guide (Word)
 (cd app/mobile-backend && pip install --require-hashes -r requirements.txt -r requirements-dev.in && pytest -q)   # 14
 (cd app/web && pip install --require-hashes -r requirements.txt -r requirements-dev.in && pytest -q)              # 27
 (cd app/incident-blog && pip install --require-hashes -r requirements.txt -r requirements-dev.in && pytest -q)    # 15
-(cd .github/scripts && pytest -q)                                                                                # 16 (AI diagnosis, Terraform preflight)
+(cd .github/scripts && pytest -q)                                                                                # 21 (AI diagnosis, Terraform preflight)
 python -m pytest -q app/dast/tests                                                                                 # 12 (DAST gate)
 ```
