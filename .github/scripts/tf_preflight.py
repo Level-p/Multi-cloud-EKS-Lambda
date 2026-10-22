@@ -10,16 +10,20 @@ read-only APIs the same questions the apply would:
   sg-description   security group and rule descriptions: EC2's character set, < 256 characters
   event-pattern    EventBridge patterns: lists of values only (no nested lists), then events test-event-pattern
                    with a sample event built from the pattern; the pattern must match it
-  name-taken       a resource Terraform will CREATE with a fixed name already exists in AWS (left by a failed
-                   apply, or made by hand): prints the terraform import command
+  name-taken       something Terraform will CREATE already exists (AWS, Kubernetes object, Helm release), left by
+                   a failed apply or a partial destroy. The plan job adopts it first (--adopt FILE writes import
+                   blocks, the plan is made again and shows "will be imported"); a Helm release left FAILED by an
+                   install is uninstalled by the apply job instead (--remove-failed-releases), after approval
   helm-pods        every Helm release is rendered (helm template, the planned values) and each container's
                    runAsNonRoot/runAsUser is compared with its image's USER (read from the registry): the kubelet
                    refuses root or a NAMED user, and Terraform would only report "context deadline exceeded"
 
-Usage: tf_preflight.py tfplan.json     (AWS credentials and AWS_REGION in the environment)
+Usage: tf_preflight.py tfplan.json [--adopt FILE | --remove-failed-releases]
+       (AWS credentials and AWS_REGION in the environment; kubectl/helm configured for the platform stack)
 Exit 1 with ::error annotations and a table on the run's summary page when something would fail.
 """
 
+import argparse
 import json
 import os
 import re
@@ -242,27 +246,117 @@ def exists(rtype, name, out):
     return True
 
 
-def check_names_taken(plan, run=aws):
-    errors = []
+def cli(args):
+    """Runs kubectl or helm: (exit code, stdout, stderr)."""
+    p = subprocess.run(args, capture_output=True, text=True)
+    return p.returncode, p.stdout, p.stderr.strip()
+
+
+# Kubernetes objects: type -> (kubectl kind, namespaced). Import id: namespace/name, or name
+KUBE_KINDS = {
+    "kubernetes_namespace_v1": ("namespace", False),
+    "kubernetes_secret_v1": ("secret", True),
+    "kubernetes_config_map_v1": ("configmap", True),
+    "kubernetes_network_policy_v1": ("networkpolicy", True),
+    "kubernetes_storage_class_v1": ("storageclass", False),
+    "kubernetes_service_account_v1": ("serviceaccount", True),
+}
+# A release in one of these states never worked: the approved apply job uninstalls it, Terraform installs it again
+LEFTOVER_RELEASE = {"failed", "pending-install", "pending-upgrade", "pending-rollback", "uninstalling"}
+
+
+def existing(plan, run=aws, kube=cli):
+    """Every object the plan CREATES that already exists (left by a failed apply, a partial destroy, or made by
+    hand): dicts with addr, name, import_id (None when it cannot be adopted), problem, release_status."""
+    found = []
     for addr, rtype, after, actions in changes(plan):
-        attr, lookup = LOOKUPS.get(rtype, (None, None))
-        name = after.get(attr) if attr else None
-        if actions != ["create"] or not isinstance(name, str) or not name:
-            continue   # updates and replacements are already in the state; generated names cannot collide
-        code, out, err = run(lookup(name), None if rtype == "aws_s3_bucket" else after.get("region"))
-        if code == 0 and exists(rtype, name, out):
-            if rtype == "aws_secretsmanager_secret" and (out or {}).get("DeletedDate"):
-                fix = (f"it is scheduled for deletion: aws secretsmanager restore-secret --secret-id '{name}' then "
-                       f"terraform import '{addr}' '{out.get('ARN')}', or delete it now with --force-delete-without-recovery")
-            else:
-                ident = (out or {}).get("ARN") if rtype == "aws_secretsmanager_secret" else name
-                fix = f"terraform import '{addr}' '{ident}'  (or delete it in AWS if it is not wanted)"
-            errors.append((addr, "name-taken", f"{name!r} already exists in AWS but not in the Terraform state: {fix}"))
-        elif code != 0 and rtype == "aws_s3_bucket" and "403" in err:
-            errors.append((addr, "name-taken", f"bucket {name!r} belongs to another AWS account: choose another name"))
-        elif code != 0 and not NOT_FOUND.search(err):
-            print(f"::warning::{addr}: could not check whether {name!r} exists: {err}")
+        if actions != ["create"]:
+            continue   # updates and replacements are already in the state
+        if rtype in LOOKUPS:
+            attr, lookup = LOOKUPS[rtype]
+            name = after.get(attr)
+            if not isinstance(name, str) or not name:
+                continue   # generated names (name_prefix) cannot collide
+            code, out, err = run(lookup(name), None if rtype == "aws_s3_bucket" else after.get("region"))
+            if code == 0 and exists(rtype, name, out):
+                if rtype == "aws_secretsmanager_secret" and (out or {}).get("DeletedDate"):
+                    found.append(dict(addr=addr, name=name, import_id=None, release_status=None, problem=(
+                        f"scheduled for deletion: aws secretsmanager restore-secret --secret-id '{name}' (it is then "
+                        f"adopted), or delete it now with --force-delete-without-recovery")))
+                else:
+                    ident = (out or {}).get("ARN") if rtype == "aws_secretsmanager_secret" else name
+                    found.append(dict(addr=addr, name=name, import_id=ident, release_status=None, problem=None))
+            elif code != 0 and rtype == "aws_s3_bucket" and "403" in err:
+                found.append(dict(addr=addr, name=name, import_id=None, release_status=None,
+                                  problem="the bucket name belongs to another AWS account: choose another name"))
+            elif code != 0 and not NOT_FOUND.search(err):
+                print(f"::warning::{addr}: could not check whether {name!r} exists: {err}")
+        elif rtype == "helm_release" and isinstance(after.get("name"), str):
+            name, ns = after["name"], after.get("namespace") or "default"
+            code, out, err = kube(["helm", "status", name, "-n", ns, "-o", "json"])
+            if code == 0:
+                status = (json.loads(out or "{}").get("info") or {}).get("status") or "unknown"
+                leftover = status in LEFTOVER_RELEASE
+                found.append(dict(addr=addr, name=f"{ns}/{name}", release_status=status, problem=None,
+                                  import_id=None if leftover else f"{ns}/{name}"))
+            elif not NOT_FOUND.search(err):
+                print(f"::warning::{addr}: could not check whether release {ns}/{name} exists: {err}")
+        elif rtype in KUBE_KINDS:
+            kind, namespaced = KUBE_KINDS[rtype]
+            meta = (after.get("metadata") or [{}])[0]
+            name, ns = meta.get("name"), meta.get("namespace") or "default"
+            if not isinstance(name, str) or not name:
+                continue
+            code, _, err = kube(["kubectl", "get", kind, name, "-o", "name"] + (["-n", ns] if namespaced else []))
+            if code == 0:
+                ident = f"{ns}/{name}" if namespaced else name
+                found.append(dict(addr=addr, name=ident, import_id=ident, release_status=None, problem=None))
+            elif not NOT_FOUND.search(err):
+                print(f"::warning::{addr}: could not check whether {kind} {name} exists: {err}")
+    return found
+
+
+def check_names_taken(plan, run=aws, kube=cli):
+    """Objects that exist but are neither in the state nor adopted: their create would fail."""
+    errors = []
+    for f in existing(plan, run, kube):
+        if f["release_status"] in LEFTOVER_RELEASE:
+            print(f"::notice::{f['addr']}: release {f['name']} is {f['release_status']} (a failed install): the apply "
+                  f"job uninstalls it, then Terraform installs it again")
+        elif f["problem"]:
+            errors.append((f["addr"], "name-taken", f"{f['name']!r} already exists: {f['problem']}"))
+        else:
+            errors.append((f["addr"], "name-taken", f"{f['name']!r} already exists but is not in the Terraform state: "
+                                                    f"terraform import '{f['addr']}' '{f['import_id']}' (the plan job "
+                                                    f"does this by itself with --adopt)"))
     return errors
+
+
+def write_imports(plan, path, run=aws, kube=cli):
+    """--adopt: an import block for every object that exists but is missing from the state. The next plan then
+    shows "will be imported" (reviewed and approved like any change) instead of failing in the apply."""
+    adopt = [f for f in existing(plan, run, kube) if f["import_id"] and not f["problem"]]
+    with open(path, "w", encoding="utf-8") as out:
+        out.write("# Generated by .github/scripts/tf_preflight.py --adopt: these exist but were missing from the state\n")
+        for f in adopt:
+            out.write(f'\nimport {{\n  to = {f["addr"]}\n  id = {json.dumps(f["import_id"])}\n}}\n')
+            print(f"::notice::adopting {f['addr']} (exists: {f['name']})")
+    return len(adopt)
+
+
+def remove_failed_releases(plan, kube=cli):
+    """--remove-failed-releases (apply job, after approval): uninstall the releases left by a failed install that
+    the plan installs again; Helm would otherwise refuse with "cannot re-use a name that is still in use"."""
+    no_aws = lambda *a, **k: (1, None, "NotFound")   # noqa: E731  (only Helm releases matter here)
+    for f in existing(plan, run=no_aws, kube=kube):
+        if f["release_status"] in LEFTOVER_RELEASE:
+            ns, name = f["name"].split("/", 1)
+            print(f"uninstalling {f['name']} ({f['release_status']}, left by a failed install)")
+            code, _, err = kube(["helm", "uninstall", name, "-n", ns, "--wait", "--timeout", "5m"])
+            if code != 0:
+                print(f"::error::{f['addr']}: helm uninstall {f['name']} failed: {err}")
+                return 1
+    return 0
 
 
 # ---------------------------------------------------------------------------------------------------------
@@ -410,9 +504,19 @@ def check_helm_pods(plan, run=None, render=helm, user_of=image_user, workdir="."
 CHECKS = [check_db_parameters, check_sg_descriptions, check_event_patterns, check_names_taken, check_helm_pods]
 
 
-def main(path):
-    with open(path, encoding="utf-8") as f:
+def main(argv):
+    ap = argparse.ArgumentParser(description="Terraform plan preflight (see the module docstring)")
+    ap.add_argument("plan", help="terraform show -json tfplan > tfplan.json")
+    ap.add_argument("--adopt", metavar="FILE", help="write import blocks for existing objects missing from the state")
+    ap.add_argument("--remove-failed-releases", action="store_true", help="uninstall releases left by a failed install")
+    args = ap.parse_args(argv)
+    with open(args.plan, encoding="utf-8") as f:
         plan = json.load(f)
+    if args.adopt:
+        print(f"preflight: {write_imports(plan, args.adopt)} existing object(s) to adopt")
+        return 0
+    if args.remove_failed_releases:
+        return remove_failed_releases(plan)
     errors = [e for check in CHECKS for e in check(plan)]
     summary = os.environ.get("GITHUB_STEP_SUMMARY")
     if not errors:
@@ -432,4 +536,4 @@ def main(path):
 
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1]))
+    sys.exit(main(sys.argv[1:]))

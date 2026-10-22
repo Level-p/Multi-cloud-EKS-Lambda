@@ -5,6 +5,9 @@
 *.tfstate.*
 tfplan
 *.tfplan
+tfplan.json
+# written by the plan job (tf_preflight.py --adopt) for objects that exist but are missing from the state
+adopted_imports.tf
 crash.log
 *.tfvars
 !*.tfvars.example

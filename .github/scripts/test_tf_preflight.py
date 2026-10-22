@@ -115,7 +115,7 @@ def test_main_writes_annotations_and_summary(tmp_path, monkeypatch, capsys):
     f.write_text(json.dumps(plan("aws_security_group", {"description": "it's bad", "ingress": [], "egress": []})))
     monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(tmp_path / "summary.md"))
     monkeypatch.setattr(p, "CHECKS", [p.check_sg_descriptions])
-    assert p.main(str(f)) == 1
+    assert p.main([str(f)]) == 1
     assert "::error title=preflight sg-description::" in capsys.readouterr().out
     assert "the apply would fail" in (tmp_path / "summary.md").read_text()
 
@@ -189,3 +189,60 @@ def test_failed_render_is_an_error_and_unknown_values_are_skipped():
     assert errs and "helm template failed: chart not found" in errs[0][2]
     unknown = helm_plan(); unknown["resource_changes"][0]["change"]["after"]["values"] = [None]
     assert p.check_helm_pods(unknown, render=lambda a: (_ for _ in ()).throw(AssertionError()), user_of=lambda i: "") == []
+
+
+# --- existing objects missing from the state: adopted, or (failed Helm installs) removed ---------------------
+def fake_kube(answers, calls=None):
+    """answers: ('helm'|'kubectl', name) -> (code, stdout, stderr); everything else is NotFound."""
+    def kube(args):
+        if calls is not None:
+            calls.append(args)
+        key = (args[0], args[3] if args[0] == "kubectl" else args[2])
+        if args[:2] == ["helm", "uninstall"]:
+            return 0, "", ""
+        return answers.get(key, (1, "", "Error: release: not found" if args[0] == "helm" else "Error from server (NotFound)"))
+    return kube
+
+
+def platform_plan():
+    rcs = []
+    for addr, rtype, after in [
+        ("module.k8s_observability.helm_release.yace", "helm_release", {"name": "yace", "namespace": "monitoring", "chart": "c"}),
+        ('module.k8s_gitops.helm_release.this["argocd"]', "helm_release", {"name": "argocd", "namespace": "argocd", "chart": "c"}),
+        ("module.k8s_observability.kubernetes_secret_v1.grafana_admin", "kubernetes_secret_v1",
+         {"metadata": [{"name": "grafana-admin", "namespace": "monitoring"}]}),
+        ("module.k8s_observability.kubernetes_storage_class_v1.gp3", "kubernetes_storage_class_v1", {"metadata": [{"name": "gp3"}]}),
+        ("module.k8s_controllers.helm_release.csi", "helm_release", {"name": "csi", "namespace": "kube-system", "chart": "c"}),
+    ]:
+        rcs.append({"address": addr, "mode": "managed", "type": rtype, "change": {"actions": ["create"], "after": after}})
+    return {"resource_changes": rcs}
+
+
+KUBE = {("helm", "yace"): (0, '{"info": {"status": "failed"}}', ""),
+        ("helm", "argocd"): (0, '{"info": {"status": "deployed"}}', ""),
+        ("kubectl", "grafana-admin"): (0, "secret/grafana-admin", ""),
+        ("kubectl", "gp3"): (0, "storageclass.storage.k8s.io/gp3", "")}
+
+
+def test_existing_objects_are_adopted_with_import_blocks(tmp_path):
+    out = tmp_path / "adopted_imports.tf"
+    assert p.write_imports(platform_plan(), str(out), run=fake_aws({}), kube=fake_kube(KUBE)) == 3
+    text = out.read_text()
+    assert 'to = module.k8s_gitops.helm_release.this["argocd"]\n  id = "argocd/argocd"' in text
+    assert 'id = "monitoring/grafana-admin"' in text and 'id = "gp3"' in text
+    assert "yace" not in text and "csi" not in text   # failed install: removed, not adopted; csi does not exist
+
+
+def test_failed_release_is_a_notice_and_unadopted_objects_are_errors(capsys):
+    errs = p.check_names_taken(platform_plan(), run=fake_aws({}), kube=fake_kube(KUBE))
+    assert sorted(e[0] for e in errs) == ['module.k8s_gitops.helm_release.this["argocd"]',
+                                         "module.k8s_observability.kubernetes_secret_v1.grafana_admin",
+                                         "module.k8s_observability.kubernetes_storage_class_v1.gp3"]
+    assert "the apply job uninstalls it" in capsys.readouterr().out
+
+
+def test_apply_job_uninstalls_only_releases_left_by_a_failed_install():
+    calls = []
+    assert p.remove_failed_releases(platform_plan(), kube=fake_kube(KUBE, calls)) == 0
+    assert [c for c in calls if c[:2] == ["helm", "uninstall"]] == [
+        ["helm", "uninstall", "yace", "-n", "monitoring", "--wait", "--timeout", "5m"]]

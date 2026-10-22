@@ -53,6 +53,24 @@ jobs:
           terraform_version: ${{ env.TF_VERSION }}
           terraform_wrapper: false
 
+      # The preflight (.github/scripts/tf_preflight.py) is tested before it is trusted
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Preflight tools
+        run: |
+          python -m pip install --quiet pytest==9.1.1 pyyaml==6.0.3
+          python -m pytest -q .github/scripts/test_tf_preflight.py
+
+      # kubectl/helm for the preflight: what already exists in the cluster (adopted, or flagged)
+      - uses: ./.github/actions/infra-outputs
+        with:
+          stack: aws
+
+      - name: Cluster access (read-only use in this job)
+        run: aws eks update-kubeconfig --name "$TF_OUT_CLUSTER_NAME" --region "$AWS_REGION" >/dev/null
+
       - name: terraform plan
         working-directory: ${{ env.TF_DIR }}
         env:
@@ -65,24 +83,30 @@ jobs:
           terraform fmt -check -recursive . ../modules
           terraform validate
           terraform plan -input=false -out=tfplan
+          # Objects that exist but are missing from the state (a failed apply, a partial destroy) are adopted with
+          # import blocks instead of failing the apply with "already exists"; the plan is then made again and
+          # shows them as "will be imported"
+          terraform show -json tfplan > tfplan.json
+          python "$GITHUB_WORKSPACE/.github/scripts/tf_preflight.py" tfplan.json --adopt adopted_imports.tf
+          if grep -q '^import' adopted_imports.tf; then
+            cat adopted_imports.tf
+            terraform plan -input=false -out=tfplan
+          fi
 
       # terraform plan checks types, AWS checks values only during the apply (after other resources were created).
       # Ask AWS's read-only APIs the same questions now, before anyone approves the plan (.github/scripts/tf_preflight.py)
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: "3.12"
-
       - name: Preflight (AWS checks the apply would hit)
         working-directory: ${{ env.TF_DIR }}
         run: |
-          python -m pip install --quiet pytest==9.1.1 pyyaml==6.0.3 && python -m pytest -q "$GITHUB_WORKSPACE/.github/scripts/test_tf_preflight.py"
           terraform show -json tfplan > tfplan.json
           python "$GITHUB_WORKSPACE/.github/scripts/tf_preflight.py" tfplan.json
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: tfplan-platform
-          path: ${{ env.TF_DIR }}/tfplan
+          path: |
+            ${{ env.TF_DIR }}/tfplan
+            ${{ env.TF_DIR }}/adopted_imports.tf
           retention-days: 5
 
   apply:
@@ -110,6 +134,25 @@ jobs:
           terraform_version: ${{ env.TF_VERSION }}
           terraform_wrapper: false
 
+      # A Helm release left FAILED by an earlier install blocks a new install ("cannot re-use a name that is still
+      # in use"): it never worked, so it is uninstalled here, after approval, and the apply installs it again
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - uses: ./.github/actions/infra-outputs
+        with:
+          stack: aws
+
+      - name: Remove Helm releases left by a failed install
+        working-directory: ${{ env.TF_DIR }}
+        run: |
+          python -m pip install --quiet pyyaml==6.0.3
+          aws eks update-kubeconfig --name "$TF_OUT_CLUSTER_NAME" --region "$AWS_REGION" >/dev/null
+          terraform init -input=false
+          terraform show -json tfplan > tfplan.json
+          python "$GITHUB_WORKSPACE/.github/scripts/tf_preflight.py" tfplan.json --remove-failed-releases
+
       - name: terraform apply (the reviewed plan)
         working-directory: ${{ env.TF_DIR }}
         run: |
@@ -125,11 +168,6 @@ jobs:
       # A Helm release whose pods never get ready fails with only "context deadline exceeded". Print WHY (pods
       # not ready, their container states and events, failed releases) at the end of the log, where the AI
       # diagnosis reads it.
-      - uses: ./.github/actions/infra-outputs
-        if: failure()
-        with:
-          stack: aws
-
       - name: Cluster state (only when the apply failed)
         if: failure()
         run: |

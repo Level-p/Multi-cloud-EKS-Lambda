@@ -8,7 +8,7 @@
 #             cluster is simply forgotten by Terraform: it goes with the cluster in the aws job
 #   aws       EKS, VPC, NAT, RDS PostgreSQL (no final snapshot unless deletion_protection), ALB, the WAF and
 #             the three CloudFront distributions, API Gateway + Lambda, ECR, KMS keys (7-day deletion window),
-#             the S3 media bucket and its files, Cognito, Secrets Manager, alarms, the DNS records in the zone
+#             the S3 media bucket and its files, Cognito, Secrets Manager, EventBridge -> Slack, the DNS records
 #
 # Kept: what infra/bootstrap.sh made (the S3 state bucket, the GitHub Actions role) and the Route 53 zone.
 # ---------------------------------------------------------------------------
@@ -71,21 +71,37 @@ jobs:
 
       - name: Remove what would outlive the cluster, forget the rest
         working-directory: infra/platform
+        # Safe to re-run: every clean-up command tolerates "already gone"; everything else fails the step
         run: |
-          set -uo pipefail
+          set -euo pipefail
           terraform init -input=false
           CLUSTER=$(aws eks list-clusters --query "clusters[?@=='agripulse-eks'] | [0]" --output text)
           if [ "$CLUSTER" = "agripulse-eks" ]; then
             aws eks update-kubeconfig --region "$AWS_REGION" --name "$CLUSTER"
             # Argo CD apps (finalizer: their resources are pruned), then the releases that own EBS volumes
-            kubectl delete applications.argoproj.io -n argocd --all --wait=true --timeout=5m || true
-            helm uninstall tempo loki -n monitoring --wait --timeout 5m || true
-            kubectl delete pvc -n monitoring --all --wait=true --timeout=5m || true   # reclaimPolicy Delete: EBS volumes go
+            if kubectl get crd applications.argoproj.io >/dev/null 2>&1; then
+              kubectl delete applications.argoproj.io -n argocd --all --wait=true --timeout=5m || true
+            else
+              echo "Argo CD is not installed: no applications to delete"
+            fi
+            for release in tempo loki; do
+              if helm status "$release" -n monitoring >/dev/null 2>&1; then
+                helm uninstall "$release" -n monitoring --wait --timeout 5m
+              fi
+            done
+            kubectl delete pvc -n monitoring --all --wait=true --timeout=5m   # reclaimPolicy Delete: EBS volumes go
           else
             echo "No cluster: nothing inside it to clean up"
           fi
-          inside=$(terraform state list || true)
-          [ -n "$inside" ] && echo "$inside" | xargs terraform state rm
+          # Forget the rest. One argument per address, never through xargs: it strips the quotes of for_each
+          # keys (module.x.helm_release.this["argocd"] -> this[argocd], "Index value required")
+          addresses=$(terraform state list)
+          if [ -n "$addresses" ]; then
+            mapfile -t inside <<< "$addresses"
+            terraform state rm "${inside[@]}"
+          fi
+          left=$(terraform state list)
+          [ -z "$left" ] || { echo "::error::Still in the platform state:"; echo "$left"; exit 1; }
           echo "### Platform removed (in-cluster state forgotten; EBS volumes deleted)" >> "$GITHUB_STEP_SUMMARY"
 
   aws:
