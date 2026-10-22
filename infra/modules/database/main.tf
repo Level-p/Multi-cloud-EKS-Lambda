@@ -46,9 +46,10 @@ resource "aws_db_parameter_group" "this" {
     name  = "log_min_duration_statement"
     value = "500" # slow statements (ms) go to the PostgreSQL log in CloudWatch
   }
+  # PostgreSQL 18 made log_connections a list of stages instead of on/off; these three are what "on" logged before
   parameter {
     name  = "log_connections"
-    value = "1"
+    value = "receipt,authentication,authorization"
   }
 }
 

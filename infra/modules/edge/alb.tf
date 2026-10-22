@@ -26,7 +26,7 @@ resource "aws_security_group" "alb" {
 
 resource "aws_vpc_security_group_ingress_rule" "alb_from_cloudfront" {
   security_group_id = aws_security_group.alb.id
-  description       = "HTTPS from CloudFront's origin-facing servers"
+  description       = "HTTPS from the CloudFront origin-facing servers" # EC2 rejects apostrophes here
   prefix_list_id    = data.aws_ec2_managed_prefix_list.cloudfront.id
   from_port         = 443
   to_port           = 443
