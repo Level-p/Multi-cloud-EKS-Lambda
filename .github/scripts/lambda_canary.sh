@@ -5,7 +5,8 @@
 #   2. smoke-test the new version directly (GET /health event)
 #   3. the "live" alias (behind API Gateway) sends CANARY_WEIGHT of traffic to it
 #   4. for BAKE_MINUTES, check every minute: errors of the NEW version (ExecutedVersion
-#      dimension) and the live-errors alarm. Any error -> roll back to the old version.
+#      dimension, read straight from CloudWatch metrics). Any error -> roll back to the old version.
+#      (Alerting is Prometheus -> Slack; this check is the deployment gate itself, not an alert.)
 #   5. healthy -> the alias points 100 % to the new version
 # Usage: lambda_canary.sh <function-name> <package.zip>
 # ---------------------------------------------------------------------------
@@ -17,7 +18,6 @@ ALIAS="${ALIAS:-live}"
 HANDLER="${HANDLER:-agripulse_mobile.handler.handler}"
 CANARY_WEIGHT="${CANARY_WEIGHT:-0.1}"
 BAKE_MINUTES="${BAKE_MINUTES:-5}"
-ALARM="${CANARY_ALARM:-agripulse-lambda-live-errors}"
 
 log() { echo "[canary] $*"; }
 
@@ -58,10 +58,8 @@ for i in $(seq 1 "$BAKE_MINUTES"); do
   ERRORS=$(aws cloudwatch get-metric-statistics --namespace AWS/Lambda --metric-name Errors \
     --dimensions Name=FunctionName,Value="$FN" Name=Resource,Value="$FN:$ALIAS" Name=ExecutedVersion,Value="$NEW" \
     --start-time "$START" --end-time "$END" --period 60 --statistics Sum --query 'sum(Datapoints[].Sum)' --output text)
-  STATE=$(aws cloudwatch describe-alarms --alarm-names "$ALARM" --query 'MetricAlarms[0].StateValue' --output text)
-  log "minute $i: new-version errors=${ERRORS:-0} alarm=$STATE"
+  log "minute $i: new-version errors=${ERRORS:-0}"
   if [ "${ERRORS:-0}" != "None" ] && awk "BEGIN{exit !(${ERRORS:-0} > 0)}"; then rollback "$ERRORS errors on version $NEW"; fi
-  if [ "$STATE" = "ALARM" ]; then rollback "alarm $ALARM in ALARM state"; fi
 done
 
 aws lambda update-alias --function-name "$FN" --name "$ALIAS" --function-version "$NEW" \

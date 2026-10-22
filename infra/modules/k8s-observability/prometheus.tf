@@ -2,7 +2,8 @@
 # Prometheus, Alertmanager and Grafana (kube-prometheus-stack)
 #   Prometheus      scrapes the apps (/metrics), Valkey, the controllers; Argo Rollouts' canary analysis
 #                   queries it; Tempo writes span metrics into it (observability.tf)
-#   Alertmanager    critical/warning alerts -> the incident blog (opens an incident) and Slack (optional)
+#   Alertmanager    EVERY alert -> Slack (the one alert channel); critical/warning also open an incident in the
+#                   incident blog
 #   Grafana         Prometheus + Tempo + Loki, linked both ways; admin password from Secrets Manager
 # EKS runs the control plane itself: etcd, the scheduler, the controller manager (and kube-proxy's
 # metrics, bound to localhost) cannot be scraped, so those jobs are off instead of alerting forever.
@@ -10,7 +11,6 @@
 
 locals {
   incident_webhook = "http://incident-blog.incident-response.svc:8080/webhooks/alertmanager"
-  slack_enabled    = nonsensitive(var.slack_webhook_url != "")
 }
 
 resource "kubernetes_namespace_v1" "monitoring" {
@@ -33,13 +33,16 @@ resource "kubernetes_secret_v1" "alertmanager_incident_token" {
   data = { token = data.aws_secretsmanager_secret_version.webhook_token.secret_string }
 }
 
+data "aws_secretsmanager_secret_version" "slack_webhook" {
+  secret_id = var.slack_webhook_secret_arn
+}
+
 resource "kubernetes_secret_v1" "alertmanager_slack" {
-  count = local.slack_enabled ? 1 : 0
   metadata {
     name      = "alertmanager-slack"
     namespace = kubernetes_namespace_v1.monitoring.metadata[0].name
   }
-  data = { "webhook-url" = var.slack_webhook_url }
+  data = { "webhook-url" = data.aws_secretsmanager_secret_version.slack_webhook.secret_string }
 }
 
 resource "kubernetes_secret_v1" "grafana_admin" {
@@ -72,37 +75,38 @@ resource "helm_release" "monitoring" {
         enableFeatures                          = ["exemplar-storage"] # keeps the trace ids attached to those metrics
       }
     }
+    # The alert rules of the whole project: OpenTelemetry span metrics and AWS (CloudWatch via YACE) (alerts.tf)
+    additionalPrometheusRulesMap = local.alert_rules
     alertmanager = {
-      alertmanagerSpec = { secrets = concat(["alertmanager-incident-blog"], local.slack_enabled ? ["alertmanager-slack"] : []) }
+      alertmanagerSpec = { secrets = ["alertmanager-incident-blog", "alertmanager-slack"] }
       config = {
         route = {
-          receiver = "incident-blog"
+          receiver = "slack" # anything not matched below still reaches Slack
           group_by = ["alertname", "namespace"]
-          routes = concat([
+          routes = [
+            # Prometheus' own heartbeat alerts are not incidents
             { receiver = "null", matchers = ["alertname =~ \"Watchdog|InfoInhibitor\""] },
-            # Critical and warning alerts open an incident in the incident blog (Detected state)...
+            # Critical and warning alerts also open an incident in the incident blog (Detected state)...
             { receiver = "incident-blog", matchers = ["severity =~ \"critical|warning\""], continue = true },
-            ], local.slack_enabled ? [
-            # ...and reach people in Slack
-            { receiver = "slack", matchers = ["severity =~ \"critical|warning\""] },
-          ] : [])
+            # ...and EVERY alert (critical, warning, info) reaches people in Slack, with its resolution
+            { receiver = "slack" },
+          ]
         }
-        receivers = concat([
+        receivers = [
           { name = "null" },
           { name = "incident-blog", webhook_configs = [{
             url           = local.incident_webhook
             send_resolved = false
             http_config   = { authorization = { type = "Bearer", credentials_file = "/etc/alertmanager/secrets/alertmanager-incident-blog/token" } }
           }] },
-          ], local.slack_enabled ? [{
-            name = "slack"
-            slack_configs = [{
-              api_url_file  = "/etc/alertmanager/secrets/alertmanager-slack/webhook-url"
-              send_resolved = true
-              title         = "[{{ .Status | toUpper }}] {{ .CommonLabels.alertname }} ({{ .CommonLabels.namespace }})"
-              text          = "{{ range .Alerts }}{{ .Annotations.summary }}\n{{ end }}"
-            }]
-        }] : [])
+          { name = "slack", slack_configs = [{
+            api_url_file  = "/etc/alertmanager/secrets/alertmanager-slack/webhook-url"
+            send_resolved = true
+            color         = "{{ if eq .Status \"firing\" }}{{ if eq .CommonLabels.severity \"critical\" }}danger{{ else }}warning{{ end }}{{ else }}good{{ end }}"
+            title         = "[{{ .Status | toUpper }}] {{ .CommonLabels.alertname }} ({{ .CommonLabels.namespace }}, {{ .CommonLabels.severity }})"
+            text          = "{{ range .Alerts }}{{ .Annotations.summary }}\n{{ end }}"
+          }] },
+        ]
       }
     }
     # Grafana: dashboards for the cluster, the apps and the Valkey cache. Admin password generated by

@@ -1,4 +1,5 @@
-# AIOps for CI/CD: when a job failed, explain why (Claude, redacted logs) on the run's summary page.
+# AIOps for CI/CD: when a job failed, explain why (Claude, redacted logs) on the run's summary page and in Slack
+# (the project's one alert channel).
 # The job that uses it needs: permissions actions: read, checks: read. Never fails the run further.
 name: AI failure diagnosis
 description: Explains a failed workflow run (.github/scripts/ai_failure_summary.py)
@@ -7,7 +8,7 @@ inputs:
     description: Optional; without it a plain list of the failed steps is written
     default: ""
   slack-webhook-url:
-    description: Optional Slack incoming webhook
+    description: "Slack incoming webhook (secret SLACK_WEBHOOK_URL): the failure and its diagnosis are posted there"
     default: ""
 runs:
   using: composite

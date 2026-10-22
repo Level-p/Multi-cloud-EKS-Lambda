@@ -28,7 +28,7 @@ terraform {
 variable "github_repository" {
   description = "GitHub repository allowed to deploy, in OWNER/REPO form (no https://github.com/, no .git)"
   type        = string
-  default     = "Level-p/Multi-cloud-EKS-AzureFunctions" # exact case; update it if the repository is renamed
+  default     = "Level-p/Multi-cloud-EKS-Lambda" # exact case; update it if the repository is renamed
 
   validation {
     condition     = can(regex("^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$", var.github_repository)) && !endswith(var.github_repository, ".git")

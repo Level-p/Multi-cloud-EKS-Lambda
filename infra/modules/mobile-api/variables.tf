@@ -62,7 +62,3 @@ variable "reserved_concurrency" {
   type        = number
   default     = -1
 }
-
-variable "alarm_topic_arn" {
-  type = string
-}

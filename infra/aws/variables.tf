@@ -61,10 +61,15 @@ variable "waf_rate_limit" {
   default     = 1000
 }
 
-variable "alarm_email" {
-  description = "E-mail subscribed to the alarm topic (confirm the subscription e-mail). Empty = no subscription"
+variable "slack_webhook_url" {
+  description = "Slack incoming webhook: the ONE channel for every alert (CloudWatch, GuardDuty, RDS events, Alertmanager). The pipeline passes it from the GitHub secret SLACK_WEBHOOK_URL; never write it here."
   type        = string
-  default     = ""
+  sensitive   = true
+
+  validation {
+    condition     = startswith(var.slack_webhook_url, "https://hooks.slack.com/")
+    error_message = "Set the GitHub secret SLACK_WEBHOOK_URL to a Slack incoming webhook (https://hooks.slack.com/services/...)."
+  }
 }
 
 variable "deletion_protection" {

@@ -48,8 +48,6 @@ spec:
             - --cookie-expire=8h
             - --skip-provider-button=true
             - --redirect-url=https://{{ .Values.host }}/oauth2/callback
-            # The CloudWatch alarm forwarder posts here with its own token (checked by the app); Alertmanager calls the Service directly
-            - --skip-auth-route=POST=^/webhooks/
           env:
             - name: OAUTH2_PROXY_CLIENT_SECRET
               valueFrom: { secretKeyRef: { name: incident-blog-secrets, key: oauth2-client-secret } }

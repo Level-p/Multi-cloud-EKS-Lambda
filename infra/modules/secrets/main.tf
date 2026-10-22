@@ -6,7 +6,8 @@
 #   <name>/web/*         CSRF and cookie secrets of the web app
 #   <name>/incidents/*   CSRF and cookie secrets, alert webhook token of the incident blog
 #   <name>/shared/*      oauth2-proxy's Cognito app client secret (staff sign-in, modules/identity)
-#   <name>/platform/*    Grafana admin password (read by infra/platform)
+#   <name>/platform/*    Grafana admin password (read by infra/platform); the Slack webhook every alert goes to
+#                        (read by Alertmanager in EKS)
 # The PostgreSQL master password is NOT here: RDS manages it in its own secret (modules/database).
 # recovery_window_in_days = 0: a destroy deletes them at once, so a redeploy can reuse the names.
 # ---------------------------------------------------------------------------
@@ -51,6 +52,17 @@ resource "aws_secretsmanager_secret" "oauth2_client_secret" {
 resource "aws_secretsmanager_secret_version" "oauth2_client_secret" {
   secret_id     = aws_secretsmanager_secret.oauth2_client_secret.id
   secret_string = var.oauth2_client_secret
+}
+
+# The one alert channel: Slack (value from the GitHub secret SLACK_WEBHOOK_URL)
+resource "aws_secretsmanager_secret" "slack_webhook" {
+  name                    = "${var.name}/platform/slack-webhook-url"
+  recovery_window_in_days = 0
+}
+
+resource "aws_secretsmanager_secret_version" "slack_webhook" {
+  secret_id     = aws_secretsmanager_secret.slack_webhook.id
+  secret_string = var.slack_webhook_url
 }
 
 data "aws_iam_policy_document" "read" {

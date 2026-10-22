@@ -6,7 +6,7 @@
 #   package          Linux wheels for Python 3.12 (x86_64), hash-verified, + the code + the RDS CA bundle
 #                    (checksum-verified), zipped
 #   deploy           approval (environment agripulse-production), then canary: new version smoke-tested,
-#                    10 % for 5 min watched by CloudWatch, then 100 % or automatic rollback
+#                    10 % for 5 min (errors of the new version), then 100 % or automatic rollback
 #                    (.github/scripts/lambda_canary.sh)                                    (main only)
 #   dast-production  OWASP ZAP baseline (passive, unauthenticated) of https://api.<zone>
 #   diagnose         AI explanation if anything failed (Claude)
@@ -124,7 +124,7 @@ jobs:
 
       - name: Canary deploy with automated rollback
         run: |
-          CANARY_ALARM="$TF_OUT_CANARY_ALARM" BAKE_MINUTES=5 CANARY_WEIGHT=0.1 \
+          BAKE_MINUTES=5 CANARY_WEIGHT=0.1 \
             bash .github/scripts/lambda_canary.sh "$TF_OUT_LAMBDA_FUNCTION_NAME" dist/mobile-backend.zip
 
   dast-production:

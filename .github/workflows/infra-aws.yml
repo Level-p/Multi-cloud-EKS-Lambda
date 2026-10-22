@@ -47,8 +47,11 @@ jobs:
       - name: Check repository secrets
         env:
           AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
         run: |
           [ -n "$AWS_ROLE_ARN" ] || { echo "::error::Secret AWS_ROLE_ARN is not set (printed by infra/bootstrap.sh)."; exit 1; }
+          # Slack is the one alert channel: no deployment without it
+          [ -n "$SLACK_WEBHOOK_URL" ] || { echo "::error::Secret SLACK_WEBHOOK_URL is not set (a Slack incoming webhook: every alert goes there)."; exit 1; }
 
       - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
@@ -63,7 +66,7 @@ jobs:
       - name: terraform plan
         working-directory: ${{ env.TF_DIR }}
         env:
-          TF_VAR_alarm_email: ${{ secrets.ALARM_EMAIL }}
+          TF_VAR_slack_webhook_url: ${{ secrets.SLACK_WEBHOOK_URL }}   # stored in Secrets Manager for every alert path
         run: |
           terraform init -input=false
           terraform fmt -check -recursive . ../modules

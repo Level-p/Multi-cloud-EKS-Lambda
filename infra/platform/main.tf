@@ -1,8 +1,9 @@
 # ---------------------------------------------------------------------------
 # Platform inside EKS: composes the k8s-* modules in ../modules (Helm, installed once by Terraform; the apps
 # themselves come from Git through Argo CD)
-#   k8s-observability  kube-prometheus-stack (Prometheus, Alertmanager -> incident blog, Grafana), OpenTelemetry
-#                      Collector, Tempo, Loki, the gp3 StorageClass, the Grafana dashboard
+#   k8s-observability  kube-prometheus-stack (Prometheus, Alertmanager -> Slack + incident blog, Grafana), OpenTelemetry
+#                      Collector, Tempo, Loki, YACE (CloudWatch metrics), ALL the alert rules, the gp3 StorageClass,
+#                      the Grafana dashboard
 #   k8s-controllers    AWS Load Balancer Controller (fills the ALB target groups), Secrets Store CSI (AWS)
 #   k8s-policy         Kyverno: only our registry and pinned images, Cosign signatures checked at admission
 #   k8s-gitops         app namespaces, Redis password, Argo CD + the two Applications, Argo Rollouts
@@ -15,10 +16,11 @@ locals {
 
 module "k8s_observability" {
   source                      = "../modules/k8s-observability"
+  region                      = local.aws.region
   app_namespaces              = values(local.app_namespaces)
   webhook_token_secret_arn    = local.aws.webhook_token_secret_arn
   grafana_password_secret_arn = local.aws.grafana_password_secret_arn
-  slack_webhook_url           = var.slack_webhook_url
+  slack_webhook_secret_arn    = local.aws.slack_webhook_secret_arn
 }
 
 module "k8s_controllers" {

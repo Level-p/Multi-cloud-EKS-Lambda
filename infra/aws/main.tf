@@ -10,7 +10,8 @@
 #   secrets      app secrets in Secrets Manager
 #   mobile-api   API Gateway + Lambda (the mobile backend)
 #   edge         ONE WAF web ACL on three CloudFront distributions (images, web apps, mobile API) + ALB + DNS
-#   monitoring   CloudWatch alarms (static + anomaly detection) -> SNS -> e-mail and the incident blog
+#   monitoring   AWS events Prometheus cannot see (GuardDuty malware, RDS failover) -> EventBridge -> Slack.
+#                Every other alert is a Prometheus rule in EKS (OpenTelemetry + CloudWatch via YACE) -> Slack
 # In-cluster software (controllers, observability, Argo CD, Kyverno) is the second stack: ../platform.
 # ---------------------------------------------------------------------------
 
@@ -74,6 +75,16 @@ module "eks" {
       inline_policy = jsonencode({
         Version   = "2012-10-17"
         Statement = [{ Effect = "Allow", Action = ["secretsmanager:GetSecretValue"], Resource = module.database.master_secret_arn }]
+      })
+    }
+    # YACE: brings the CloudWatch metrics of the ALB, API Gateway, Lambda and RDS into Prometheus, where the alert
+    # rules run (read-only: metrics and resource tags)
+    yace = {
+      namespace = "monitoring", service_account = "yace", managed_policy_arns = []
+      inline_policy = jsonencode({
+        Version = "2012-10-17"
+        Statement = [{ Effect = "Allow", Resource = "*", Action = ["cloudwatch:GetMetricData", "cloudwatch:GetMetricStatistics",
+        "cloudwatch:ListMetrics", "tag:GetResources", "apigateway:GET"] }]
       })
     }
     # Reads Cosign signatures from ECR for the admission checks
@@ -144,6 +155,7 @@ module "secrets" {
   name                 = var.name
   region               = var.region
   oauth2_client_secret = module.identity.oauth2_client_secret
+  slack_webhook_url    = var.slack_webhook_url
 }
 
 # ---------------- mobile API ----------------
@@ -161,7 +173,6 @@ module "mobile_api" {
   media_bucket_arn     = module.storage.bucket_arn
   media_cdn_domain     = local.hosts["media"]
   origin_verify_secret = random_password.origin_verify.result
-  alarm_topic_arn      = module.monitoring.alarm_topic_arn
 }
 
 # ---------------- edge: one WAF, three CloudFront distributions ----------------
@@ -188,12 +199,8 @@ module "edge" {
 }
 
 module "monitoring" {
-  source                    = "../modules/monitoring"
-  name                      = var.name
-  alarm_email               = var.alarm_email
-  webhook_url               = "https://${local.hosts["incidents"]}/webhooks/cloudwatch"
-  webhook_token_secret_arn  = module.secrets.webhook_token_secret_arn
-  alb_arn_suffix            = module.edge.alb_arn_suffix
-  target_group_arn_suffixes = module.edge.target_group_arn_suffixes
-  db_identifier             = module.database.identifier
+  source            = "../modules/monitoring"
+  name              = var.name
+  slack_webhook_url = var.slack_webhook_url
+  db_identifier     = module.database.identifier
 }

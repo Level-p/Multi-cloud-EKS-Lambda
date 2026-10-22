@@ -14,8 +14,3 @@ output "lambda_function_name" {
 output "lambda_alias" {
   value = aws_lambda_alias.live.name
 }
-
-output "canary_alarm" {
-  description = "CloudWatch alarm the pipeline checks during the Lambda canary"
-  value       = aws_cloudwatch_metric_alarm.lambda_live_errors.alarm_name
-}

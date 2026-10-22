@@ -117,10 +117,6 @@ output "lambda_alias" {
   value = module.mobile_api.lambda_alias
 }
 
-output "canary_alarm" {
-  value = module.mobile_api.canary_alarm
-}
-
 # ---------------- secrets ----------------
 output "secret_prefix" {
   value = module.secrets.prefix
@@ -128,6 +124,11 @@ output "secret_prefix" {
 
 output "webhook_token_secret_arn" {
   value = module.secrets.webhook_token_secret_arn
+}
+
+output "slack_webhook_secret_arn" {
+  description = "The Slack webhook every alert goes to (Alertmanager in infra/platform reads it from here)"
+  value       = module.secrets.slack_webhook_secret_arn
 }
 
 output "grafana_password_secret_arn" {

@@ -114,7 +114,7 @@ jobs:
       - name: terraform destroy (AWS)
         working-directory: infra/aws
         env:
-          TF_VAR_alarm_email: ${{ secrets.ALARM_EMAIL }}
+          TF_VAR_slack_webhook_url: ${{ secrets.SLACK_WEBHOOK_URL }}   # a required variable of infra/aws
         run: |
           terraform init -input=false
           # deletion_protection = true (RDS, ALB, Cognito, images, media files kept) makes this fail on purpose

@@ -59,7 +59,6 @@ jobs:
           # Argo CD watches THIS repository (nothing hard-coded); a private repository needs GIT_REPO_TOKEN
           TF_VAR_git_repo_url: ${{ github.server_url }}/${{ github.repository }}.git
           TF_VAR_git_repo_token: ${{ secrets.GIT_REPO_TOKEN }}
-          TF_VAR_slack_webhook_url: ${{ secrets.SLACK_WEBHOOK_URL }}
           TF_VAR_price_admins: ${{ vars.PRICE_ADMINS != '' && vars.PRICE_ADMINS || '[]' }}   # e.g. ["you@example.com"]
         run: |
           terraform init -input=false

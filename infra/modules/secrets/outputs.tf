@@ -11,6 +11,10 @@ output "webhook_token_secret_arn" {
   value = aws_secretsmanager_secret.generated["incidents/webhook-token"].arn
 }
 
+output "slack_webhook_secret_arn" {
+  value = aws_secretsmanager_secret.slack_webhook.arn
+}
+
 output "grafana_password_secret_arn" {
   value = aws_secretsmanager_secret.generated["platform/grafana-admin-password"].arn
 }

@@ -120,27 +120,6 @@ def test_alertmanager_opens_one_incident_per_group(client):
         assert inc.severity == "SEV2" and inc.state == "detected" and inc.commander == "alertmanager"
 
 
-def test_cloudwatch_alarm_opens_one_incident(client):
-    alarm = {"AlarmName": "agripulse-alb-target-5xx", "AlarmDescription": "The web app or the incident blog returns 5xx errors",
-             "NewStateValue": "ALARM", "NewStateReason": "Threshold Crossed: 3 datapoints", "Trigger": {"Namespace": "AWS/ApplicationELB"}}
-    assert client.post("/webhooks/cloudwatch", json=alarm).status_code == 401
-    assert client.post("/webhooks/cloudwatch", json=alarm, headers={"Authorization": "Bearer wrong"}).status_code == 401
-    hdr = {"Authorization": "Bearer hook"}
-    created = client.post("/webhooks/cloudwatch", json=alarm, headers=hdr).json()["created"]
-    assert client.post("/webhooks/cloudwatch", json=alarm, headers=hdr).json() == {"created": None, "updated": created}
-    with blog.sessions()() as db:
-        inc = db.get(Incident, created)
-        assert inc.title.startswith("agripulse-alb-target-5xx") and inc.severity == "SEV2" and inc.services == "AWS/ApplicationELB"
-    assert client.post("/webhooks/cloudwatch", json={**alarm, "NewStateValue": "OK"}, headers=hdr).json() == {"created": None}
-
-
-def test_anomaly_alarm_is_sev3(client):
-    alarm = {"AlarmName": "agripulse-alb-latency-anomaly", "NewStateValue": "ALARM"}
-    created = client.post("/webhooks/cloudwatch", json=alarm, headers={"Authorization": "Bearer hook"}).json()["created"]
-    with blog.sessions()() as db:
-        assert db.get(Incident, created).severity == "SEV3"
-
-
 def test_metrics_report_open_and_untriaged_from_the_database(client):
     declare(client, severity="SEV1")
     iid = declare(client, severity="SEV1")

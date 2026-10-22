@@ -69,7 +69,7 @@ resource "aws_wafv2_web_acl" "this" {
     }
   }
 
-  # The mobile app and the alert webhook forwarder are non-browser HTTP clients by nature, so those two
+  # The mobile app is a non-browser HTTP client by nature, so those two
   # signals only count; scrapers, scanners and known bad bots are still blocked
   rule {
     name     = "AWSManagedRulesBotControlRuleSet"

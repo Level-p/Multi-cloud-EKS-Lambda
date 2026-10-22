@@ -6,7 +6,6 @@
   POST /incidents/{id}/transition     move to the next lifecycle state with a note (form, CSRF)
   POST /incidents/{id}/posts          add an update to the timeline without changing state
   POST /webhooks/alertmanager         Alertmanager opens SEV2/SEV3 incidents automatically (Bearer token)
-  POST /webhooks/cloudwatch           CloudWatch alarms (static + anomaly detection) via SNS and the forwarder Lambda (Bearer token)
   GET  /healthz /readyz /metrics
 
 Sign-in: oauth2-proxy (Cognito staff user pool) in front sets X-Auth-Request-Email.
@@ -267,42 +266,3 @@ async def alertmanager(request: Request, authorization: str | None = Header(defa
                               "alertmanager", source=group)
         db.commit()
         return {"created": inc.id}
-
-
-def _bearer_ok(authorization: str | None) -> bool:
-    expected = os.environ.get("WEBHOOK_TOKEN", "")
-    scheme, _, given = (authorization or "").partition(" ")
-    return bool(expected) and scheme == "Bearer" and bool(given) and hmac.compare_digest(given.encode(), expected.encode())
-
-
-def _open_or_update(group: str, title: str, severity: str, services: str, summary: str, author: str) -> dict:
-    with sessions()() as db:
-        existing = db.scalars(select(Incident).where(Incident.source == group, Incident.state != "closed")).first()
-        if existing:
-            db.add(Post(incident_id=existing.id, author=author, body=f"Still firing:\n{summary}"))
-            db.commit()
-            return {"created": None, "updated": existing.id}
-        inc = create_incident(db, title, severity, services, f"Opened automatically by {author}.\n\n{summary}", author, source=group)
-        db.commit()
-        return {"created": inc.id}
-
-
-# Alarms whose name says the service is failing (errors, no healthy pods, database failover, malware) are SEV2
-SEV2_ALARM_WORDS = ("5xx", "error", "no-healthy", "failover", "failure", "malware")
-
-
-@app.post("/webhooks/cloudwatch", status_code=202)
-async def cloudwatch(request: Request, authorization: str | None = Header(default=None)):
-    """CloudWatch alarm (the SNS message, posted by the forwarder Lambda). Only transitions to ALARM open an
-    incident; repeated ALARMs of the same alarm add to the open incident."""
-    if not _bearer_ok(authorization):
-        raise HTTPException(status_code=401, detail="unauthorised")
-    payload = await request.json()
-    if payload.get("NewStateValue") != "ALARM":
-        return {"created": None}
-    name = str(payload.get("AlarmName") or "CloudWatch alarm")[:100]
-    severity = "SEV2" if any(w in name.lower() for w in SEV2_ALARM_WORDS) else "SEV3"
-    namespace = str((payload.get("Trigger") or {}).get("Namespace") or "")[:200]
-    summary = (f"- {str(payload.get('AlarmDescription') or '')[:500]}\n"
-               f"- reason: {str(payload.get('NewStateReason') or '')[:500]}\n- metric namespace: {namespace or 'n/a'}")
-    return _open_or_update(f"cloudwatch:{name}"[:200], f"{name} (CloudWatch)"[:140], severity, namespace, summary, "cloudwatch")

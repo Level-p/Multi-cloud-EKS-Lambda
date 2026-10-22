@@ -10,7 +10,7 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 # The GitHub repository allowed to deploy (OWNER/REPO, exact case), as in https://github.com/OWNER/REPO
-GITHUB_REPO="${GITHUB_REPO:-Level-p/Multi-cloud-EKS-AzureFunctions}"
+GITHUB_REPO="${GITHUB_REPO:-Level-p/Multi-cloud-EKS-Lambda}"
 GITHUB_REPO="${GITHUB_REPO#https://github.com/}"; GITHUB_REPO="${GITHUB_REPO%.git}"; GITHUB_REPO="${GITHUB_REPO%/}"
 AWS_REGION="eu-west-2"
 AWS_STATE_BUCKET="mfon21-agripulse-tfstate"
@@ -48,4 +48,5 @@ terraform apply -auto-approve -input=false "${EXTRA_VARS[@]}"
 echo ""
 echo "Done. Add this GitHub repository secret (Settings > Secrets and variables > Actions > Secrets):"
 echo "  AWS_ROLE_ARN = $(terraform output -raw aws_role_arn)"
-echo "Optional secrets: ANTHROPIC_API_KEY (AI failure diagnosis), SLACK_WEBHOOK_URL, ALARM_EMAIL, GIT_REPO_TOKEN (private repo)"
+echo "  SLACK_WEBHOOK_URL     = your Slack incoming webhook (required: every alert goes to Slack)"
+echo "Optional secrets: ANTHROPIC_API_KEY (AI failure diagnosis), GIT_REPO_TOKEN (private repo)"

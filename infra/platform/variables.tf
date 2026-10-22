@@ -5,7 +5,7 @@ variable "region" {
 }
 
 variable "git_repo_url" {
-  description = "HTTPS URL of THIS repository, e.g. https://github.com/Level-p/Multi-cloud-EKS-AzureFunctions.git (Argo CD reads gitops/ from it). The platform workflow passes its own repository URL automatically."
+  description = "HTTPS URL of THIS repository, e.g. https://github.com/Level-p/Multi-cloud-EKS-Lambda.git (Argo CD reads gitops/ from it). The platform workflow passes its own repository URL automatically."
   type        = string
 
   validation {
@@ -30,13 +30,6 @@ variable "price_admins" {
   description = "E-mail addresses allowed to publish market prices in the web app"
   type        = list(string)
   default     = []
-}
-
-variable "slack_webhook_url" {
-  description = "Slack incoming webhook for Alertmanager (empty = alerts only to the incident blog and Grafana)"
-  type        = string
-  default     = "" # never put the real URL here: the pipeline passes it from the secret SLACK_WEBHOOK_URL
-  sensitive   = true
 }
 
 variable "enforce_image_signatures" {
