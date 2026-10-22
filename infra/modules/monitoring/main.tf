@@ -67,7 +67,7 @@ locals {
       pattern = {
         source        = ["aws.rds"]
         "detail-type" = ["RDS DB Instance Event"]
-        detail        = { SourceIdentifier = [var.db_identifier], EventCategories = [["failover"], ["failure"], ["low storage"], ["maintenance"]] }
+        detail        = { SourceIdentifier = [var.db_identifier], EventCategories = ["failover", "failure", "low storage", "maintenance"] }
       }
       paths = { db = "$.detail.SourceIdentifier", message = "$.detail.Message", id = "$.detail.EventID" }
       text  = ":warning: *RDS* <db> (<id>): <message>"
@@ -88,9 +88,11 @@ resource "aws_cloudwatch_event_target" "to_slack" {
   arn      = aws_cloudwatch_event_api_destination.slack.arn
   role_arn = aws_iam_role.events_to_slack.arn
 
+  # Not jsonencode: it escapes < and > (<), and EventBridge would no longer find the <placeholders>.
+  # The texts contain no quotes or backslashes; EventBridge escapes the values it puts in.
   input_transformer {
     input_paths    = each.value.paths
-    input_template = jsonencode({ text = each.value.text })
+    input_template = "{\"text\": \"${each.value.text}\"}"
   }
 
   retry_policy {

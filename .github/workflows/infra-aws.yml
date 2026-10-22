@@ -1,8 +1,8 @@
 # ---------------------------------------------------------------------------
 # AWS infrastructure (infra/aws, composed of infra/modules/*): VPC, EKS, RDS PostgreSQL (Multi-AZ), ECR + Cosign
 # KMS key, S3 + GuardDuty, Cognito, Secrets Manager, API Gateway + Lambda, ONE WAF on three CloudFront
-# distributions, ALB, Route 53 / ACM, CloudWatch alarms
-#   Pull request  -> security scans + terraform plan
+# distributions, ALB, Route 53 / ACM, EventBridge -> Slack
+#   Pull request  -> security scans + terraform plan + preflight (values checked with AWS's APIs)
 #   Push to main  -> the same, then apply EXACTLY that plan after approval (environment agripulse-infrastructure)
 # First of two stacks: infra-aws -> platform.
 # Sign-in: GitHub OIDC -> IAM role (secret AWS_ROLE_ARN, from infra/bootstrap.sh). No AWS keys.
@@ -12,10 +12,10 @@ name: infra-aws
 on:
   push:
     branches: [main]
-    paths: ["infra/aws/**", "infra/modules/*/**", "!infra/modules/k8s-*/**", ".github/workflows/infra-aws.yml"]
+    paths: ["infra/aws/**", "infra/modules/*/**", "!infra/modules/k8s-*/**", ".github/workflows/infra-aws.yml", ".github/scripts/tf_preflight.py"]
   pull_request:
     branches: [main]
-    paths: ["infra/aws/**", "infra/modules/*/**", "!infra/modules/k8s-*/**", ".github/workflows/infra-aws.yml"]
+    paths: ["infra/aws/**", "infra/modules/*/**", "!infra/modules/k8s-*/**", ".github/workflows/infra-aws.yml", ".github/scripts/tf_preflight.py"]
   workflow_dispatch:
 
 permissions:
@@ -72,6 +72,19 @@ jobs:
           terraform fmt -check -recursive . ../modules
           terraform validate
           terraform plan -input=false -out=tfplan
+
+      # terraform plan checks types, AWS checks values only during the apply (after other resources were created).
+      # Ask AWS's read-only APIs the same questions now, before anyone approves the plan (.github/scripts/tf_preflight.py)
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Preflight (AWS checks the apply would hit)
+        working-directory: ${{ env.TF_DIR }}
+        run: |
+          python -m pip install --quiet pytest==9.1.1 && python -m pytest -q "$GITHUB_WORKSPACE/.github/scripts/test_tf_preflight.py"
+          terraform show -json tfplan > tfplan.json
+          python "$GITHUB_WORKSPACE/.github/scripts/tf_preflight.py" tfplan.json
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:

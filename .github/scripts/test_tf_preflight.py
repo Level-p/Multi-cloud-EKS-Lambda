@@ -1,0 +1,120 @@
+import json
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent))
+import tf_preflight as p  # noqa: E402
+
+PG18 = {"EngineDefaults": {"Parameters": [
+    {"ParameterName": "log_connections", "ApplyType": "dynamic", "DataType": "list", "IsModifiable": True,
+     "AllowedValues": "receipt, authentication, authorization, setup_durations, all"},
+    {"ParameterName": "rds.force_ssl", "ApplyType": "dynamic", "DataType": "boolean", "IsModifiable": True, "AllowedValues": "0,1"},
+    {"ParameterName": "log_min_duration_statement", "ApplyType": "dynamic", "DataType": "integer", "IsModifiable": True,
+     "AllowedValues": "-1-2147483647"},
+    {"ParameterName": "shared_preload_libraries", "ApplyType": "static", "DataType": "list", "IsModifiable": True,
+     "AllowedValues": "pg_stat_statements,pgaudit"},
+]}}
+
+
+def plan(rtype, after, actions=("create",), address=None):
+    return {"resource_changes": [{"address": address or f"module.x.{rtype}.this", "mode": "managed", "type": rtype,
+                                  "change": {"actions": list(actions), "after": after}}]}
+
+
+def fake_aws(answers):
+    """answers: first CLI word after the service -> (code, out, err); records the calls."""
+    calls = []
+
+    def run(args, region=None):
+        calls.append(args)
+        return answers.get(args[1], (254, None, "An error occurred (NotFound)"))
+    run.calls = calls
+    return run
+
+
+def pg(*params):
+    return plan("aws_db_parameter_group", {"family": "postgres18", "region": "eu-west-2",
+                                           "parameter": [dict(name=n, value=v, apply_method=m) for n, v, m in params]})
+
+
+# --- the four errors of the first infra-aws run, each caught at plan time ------------------------------------
+def test_pg18_log_connections_on_off_value_is_rejected():
+    run = fake_aws({"describe-engine-default-parameters": (0, PG18, "")})
+    [(_, check, msg)] = p.check_db_parameters(pg(("log_connections", "1", "immediate")), run)
+    assert check == "db-parameters" and "log_connections = '1'" in msg and "setup_durations" in msg
+
+
+def test_sg_description_with_an_apostrophe_is_rejected():
+    errs = p.check_sg_descriptions(plan("aws_vpc_security_group_ingress_rule",
+                                        {"description": "HTTPS from CloudFront's origin-facing servers"}))
+    assert len(errs) == 1 and "found '" in errs[0][2]
+
+
+def test_existing_parameter_group_not_in_state_prints_the_import():
+    run = fake_aws({"describe-db-parameter-groups": (0, {"DBParameterGroups": [{}]}, "")})
+    [(addr, check, msg)] = p.check_names_taken(
+        plan("aws_db_parameter_group", {"name": "agripulse-postgres18"}, address="module.database.aws_db_parameter_group.this"), run)
+    assert check == "name-taken" and "terraform import 'module.database.aws_db_parameter_group.this' 'agripulse-postgres18'" in msg
+
+
+def test_nested_lists_in_an_event_pattern_are_rejected_without_calling_aws():
+    bad = {"source": ["aws.rds"], "detail": {"EventCategories": [["failover"], ["failure"]]}}
+    run = fake_aws({})
+    errs = p.check_event_patterns(plan("aws_cloudwatch_event_rule", {"event_pattern": json.dumps(bad)}), run)
+    assert len(errs) == 2 and all("holds values, not lists" in e[2] for e in errs) and run.calls == []
+
+
+# --- the fixed versions pass ------------------------------------------------------------------------------
+def test_fixed_values_pass():
+    run = fake_aws({"describe-engine-default-parameters": (0, PG18, ""), "test-event-pattern": (0, {"Result": True}, "")})
+    assert p.check_db_parameters(pg(("log_connections", "receipt,authentication,authorization", "immediate"),
+                                    ("rds.force_ssl", "1", "immediate"), ("log_min_duration_statement", "500", "immediate")), run) == []
+    assert p.check_sg_descriptions(plan("aws_vpc_security_group_ingress_rule",
+                                        {"description": "HTTPS from the CloudFront origin-facing servers"})) == []
+    good = {"source": ["aws.rds"], "detail-type": ["RDS DB Instance Event"],
+            "detail": {"SourceIdentifier": ["agripulse-postgres"], "EventCategories": ["failover", "low storage"]}}
+    assert p.check_event_patterns(plan("aws_cloudwatch_event_rule", {"event_pattern": json.dumps(good)}), run) == []
+    event = json.loads(run.calls[-1][run.calls[-1].index("--event") + 1])
+    assert event["detail"] == {"SourceIdentifier": "agripulse-postgres", "EventCategories": "failover"}
+    # generated names (name_prefix) and resources already in the state are never looked up
+    assert p.check_names_taken(plan("aws_db_parameter_group", {"name": None}), run) == []
+    assert p.check_names_taken(plan("aws_iam_role", {"name": "r"}, actions=("update",)), run) == []
+
+
+# --- the other rules ----------------------------------------------------------------------------------------
+def test_static_parameter_needs_pending_reboot_and_unknown_names_fail():
+    run = fake_aws({"describe-engine-default-parameters": (0, PG18, "")})
+    msgs = [e[2] for e in p.check_db_parameters(pg(("shared_preload_libraries", "pg_stat_statements", "immediate"),
+                                                   ("log_min_duration_statement", "-5", "immediate"),
+                                                   ("no_such_param", "1", "immediate")), run)]
+    assert any("pending-reboot" in m for m in msgs) and any("outside -1-2147483647" in m for m in msgs)
+    assert any("no such parameter" in m for m in msgs)
+
+
+def test_pattern_rejected_or_unmatched_by_eventbridge_fails():
+    good = json.dumps({"source": ["aws.rds"]})
+    rejected = fake_aws({"test-event-pattern": (254, None, "InvalidEventPatternException")})
+    assert "rejected by EventBridge" in p.check_event_patterns(plan("aws_cloudwatch_event_rule", {"event_pattern": good}), rejected)[0][2]
+    unmatched = fake_aws({"test-event-pattern": (0, {"Result": False}, "")})
+    assert "does not match" in p.check_event_patterns(plan("aws_cloudwatch_event_rule", {"event_pattern": good}), unmatched)[0][2]
+
+
+def test_secret_scheduled_for_deletion_says_restore_or_force_delete():
+    run = fake_aws({"describe-secret": (0, {"ARN": "arn:aws:secretsmanager:eu-west-2:1:secret:s-AbC", "DeletedDate": "2026-10-01"}, "")})
+    [(_, _, msg)] = p.check_names_taken(plan("aws_secretsmanager_secret", {"name": "agripulse/web/x"}), run)
+    assert "scheduled for deletion" in msg and "restore-secret" in msg
+
+
+def test_listing_lookups_need_the_exact_name():
+    run = fake_aws({"describe-log-groups": (0, {"logGroups": [{"logGroupName": "/aws/lambda/agripulse-mobile-api-old"}]}, "")})
+    assert p.check_names_taken(plan("aws_cloudwatch_log_group", {"name": "/aws/lambda/agripulse-mobile-api"}), run) == []
+
+
+def test_main_writes_annotations_and_summary(tmp_path, monkeypatch, capsys):
+    f = tmp_path / "plan.json"
+    f.write_text(json.dumps(plan("aws_security_group", {"description": "it's bad", "ingress": [], "egress": []})))
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(tmp_path / "summary.md"))
+    monkeypatch.setattr(p, "CHECKS", [p.check_sg_descriptions])
+    assert p.main(str(f)) == 1
+    assert "::error title=preflight sg-description::" in capsys.readouterr().out
+    assert "the apply would fail" in (tmp_path / "summary.md").read_text()
