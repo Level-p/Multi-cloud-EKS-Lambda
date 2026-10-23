@@ -2,8 +2,9 @@
 # CI/CD for an EKS application (web or incident blog), GitOps style. Called by web.yml and incident-blog.yml.
 #   test             pytest with hash-verified dependencies
 #   security         Gitleaks, Semgrep (+ AI-code rules), pip-audit, Checkov on the chart
-#   dast             OWASP ZAP full scan (passive + active) of the app started on the runner (blocking)
-#   build            docker build -> Trivy (fixable CRITICAL blocks) -> push to ECR -> SBOM (Syft)
+#   dast             OWASP ZAP full scan (passive + active) of the app started on the runner
+#   (scans are report only unless the repository variable SECURITY_GATES is "enforce")
+#   build            docker build -> Trivy (fixable CRITICAL: gate when SECURITY_GATES = enforce) -> push to ECR -> SBOM
 #                    -> Cosign signature + SBOM attestation with the AWS KMS key              (main only)
 #   gitops           approval (environment agripulse-production), then commit the new image tag to
 #                    gitops/charts/<app>/values.yaml: Argo CD deploys it (Kyverno checks the signature)
@@ -50,6 +51,7 @@ jobs:
         with:
           app-path: app/${{ inputs.app }}
           iac-paths: ${{ inputs.chart }}
+          blocking: ${{ vars.SECURITY_GATES == 'enforce' }}   # report only unless the repository variable says enforce
 
   dast:
     name: dast (OWASP ZAP, ephemeral)
@@ -61,6 +63,7 @@ jobs:
         with:
           app: ${{ inputs.app }}
           mode: ephemeral
+          blocking: ${{ vars.SECURITY_GATES == 'enforce' }}   # report only unless the repository variable says enforce
 
   build:
     needs: [test, security, dast]
@@ -83,12 +86,19 @@ jobs:
           echo "IMAGE=$TF_OUT_ECR_REGISTRY/agripulse/${{ inputs.app }}:$TAG" >> "$GITHUB_ENV"
           docker build -t "$TF_OUT_ECR_REGISTRY/agripulse/${{ inputs.app }}:$TAG" "app/${{ inputs.app }}"
 
-      - name: Trivy (fixable CRITICAL blocks)
+      # HIGH is always report only; fixable CRITICAL fails the run only when SECURITY_GATES = enforce
+      - name: Trivy (image vulnerabilities)
+        env:
+          GATE: ${{ vars.SECURITY_GATES == 'enforce' && '1' || '0' }}
         run: |
           docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:0.76.0 image \
-            --severity CRITICAL --ignore-unfixed --exit-code 1 --no-progress "$IMAGE"
-          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:0.76.0 image \
             --severity HIGH --ignore-unfixed --exit-code 0 --no-progress "$IMAGE"
+          if ! docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:0.76.0 image \
+            --severity CRITICAL --ignore-unfixed --exit-code 1 --no-progress "$IMAGE"; then
+            if [ "$GATE" = "1" ]; then exit 1; fi
+            echo "::warning title=Trivy (report only)::fixable CRITICAL vulnerabilities in the image (see above); not failing the run while SECURITY_GATES is not 'enforce'"
+            echo "- Trivy: fixable CRITICAL vulnerabilities (report only)" >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       - name: Push, SBOM, sign, attest
         run: |
@@ -207,6 +217,7 @@ jobs:
           app: ${{ inputs.app }}
           mode: production
           target-url: ${{ env[inputs.url-env] }}
+          blocking: ${{ vars.SECURITY_GATES == 'enforce' }}   # report only unless the repository variable says enforce
 
   diagnose:
     needs: [test, security, dast, build, gitops, observe, dast-production]

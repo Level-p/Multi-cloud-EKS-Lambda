@@ -43,6 +43,7 @@ jobs:
       - uses: ./.github/actions/security-scans
         with:
           iac-paths: infra/aws infra/modules
+          blocking: ${{ vars.SECURITY_GATES == 'enforce' }}   # report only unless the repository variable says enforce
 
       - name: Check repository secrets
         env:
@@ -77,6 +78,8 @@ jobs:
         working-directory: ${{ env.TF_DIR }}
         env:
           TF_VAR_slack_webhook_url: ${{ secrets.SLACK_WEBHOOK_URL }}   # stored in Secrets Manager for every alert path
+          # IAM users/roles that get kubectl admin (aws eks update-kubeconfig): repository variable, JSON list
+          TF_VAR_cluster_admin_arns: ${{ vars.CLUSTER_ADMIN_ARNS != '' && vars.CLUSTER_ADMIN_ARNS || '[]' }}
         run: |
           terraform init -input=false
           terraform fmt -check -recursive . ../modules

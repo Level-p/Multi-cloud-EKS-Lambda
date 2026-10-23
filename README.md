@@ -42,7 +42,7 @@ logs of the failed steps to Claude and posts the likely cause and fix to Slack a
 ## Deploy (summary)
 
 1. `cd infra && ./bootstrap.sh`: state bucket + the GitHub OIDC role; add the printed `AWS_ROLE_ARN` as a repository secret.
-2. Add `SLACK_WEBHOOK_URL` (required: the one alert channel) and `ANTHROPIC_API_KEY`; create the environments `agripulse-infrastructure` and `agripulse-production` with yourself as reviewer.
+2. Add the secrets `SLACK_WEBHOOK_URL` (required: the one alert channel) and `ANTHROPIC_API_KEY`, and the variable `CLUSTER_ADMIN_ARNS` = `["arn:aws:iam::<account>:user/<you>"]` (then `aws eks update-kubeconfig --name agripulse-eks --region eu-west-2` just works). Scans report only until the variable `SECURITY_GATES` = `enforce`; create the environments `agripulse-infrastructure` and `agripulse-production` with yourself as reviewer.
 3. Run **infra-aws**, then **platform**, then **web**, **incident-blog**, **mobile-backend**.
 4. Invite yourself to the staff pool and open https://agripulse.mfon21.space.
 

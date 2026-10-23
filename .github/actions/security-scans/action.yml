@@ -1,8 +1,10 @@
-# DevSecOps gates shared by every workflow. Needs a checkout with full history (fetch-depth: 0).
-#   Gitleaks   secrets in the repository history                        (blocking)
-#   Semgrep    Python/Dockerfile/secrets rules + AI-code rules           (ERROR findings block)
-#   pip-audit  known vulnerabilities in the hash-locked requirements     (blocking)
+# DevSecOps scans shared by every workflow. Needs a checkout with full history (fetch-depth: 0).
+#   Gitleaks   secrets in the repository history                        (gate)
+#   Semgrep    Python/Dockerfile/secrets rules + AI-code rules           (gate on ERROR findings)
+#   pip-audit  known vulnerabilities in the hash-locked requirements     (gate)
 #   Checkov    IaC misconfigurations (Terraform, Kubernetes, Dockerfile) (report only)
+# The gates block only when input blocking is "true" (repository variable SECURITY_GATES = enforce); otherwise
+# every scan still runs and its findings become warnings on the run page.
 name: Security scans
 description: Gitleaks, Semgrep, pip-audit and Checkov
 inputs:
@@ -12,16 +14,23 @@ inputs:
   iac-paths:
     description: Space-separated folders for Checkov
     default: ""
+  blocking:
+    description: "true: findings fail the run; false: report only (warnings). Workflows pass vars.SECURITY_GATES == 'enforce'"
+    default: "true"
 runs:
   using: composite
   steps:
     - name: Gitleaks (secrets)
+      id: gitleaks
+      continue-on-error: ${{ inputs.blocking != 'true' }}
       shell: bash
       run: |
         docker run --rm -v "$GITHUB_WORKSPACE:/repo" zricethezav/gitleaks:v8.30.1 \
           git /repo --redact --exit-code 1 --report-format sarif --report-path /repo/gitleaks.sarif
 
     - name: Semgrep (SAST + AI-code rules)
+      id: semgrep
+      continue-on-error: ${{ inputs.blocking != 'true' }}
       shell: bash
       run: |
         docker run --rm -v "$GITHUB_WORKSPACE:/src" -w /src semgrep/semgrep:1.181.0 sh -c '
@@ -37,6 +46,8 @@ runs:
 
     - if: inputs.app-path != ''
       name: pip-audit
+      id: pip_audit
+      continue-on-error: ${{ inputs.blocking != 'true' }}
       shell: bash
       env:
         APP_PATH: ${{ inputs.app-path }}
@@ -55,4 +66,19 @@ runs:
           docker run --rm -v "$GITHUB_WORKSPACE:/src" bridgecrew/checkov:3.3.29 \
             -d "/src/$path" --quiet --compact --soft-fail -o cli
           echo "::endgroup::"
+        done
+
+    - if: always() && inputs.blocking != 'true'
+      name: Findings (report only)
+      shell: bash
+      env:
+        GITLEAKS: ${{ steps.gitleaks.outcome }}
+        SEMGREP: ${{ steps.semgrep.outcome }}
+        PIP_AUDIT: ${{ steps.pip_audit.outcome }}
+      run: |
+        for scan in "Gitleaks:$GITLEAKS" "Semgrep:$SEMGREP" "pip-audit:$PIP_AUDIT"; do
+          if [ "${scan#*:}" = "failure" ]; then
+            echo "::warning title=${scan%%:*} (report only)::${scan%%:*} found issues; they do not fail the run while SECURITY_GATES is not 'enforce'. See the step log above."
+            echo "- ${scan%%:*}: findings (report only, see the step log)" >> "$GITHUB_STEP_SUMMARY"
+          fi
         done

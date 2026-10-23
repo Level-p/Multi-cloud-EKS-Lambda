@@ -237,6 +237,20 @@ LOOKUPS = {
 NOT_FOUND = re.compile(r"NotFound|NoSuch|does not exist|cannot be found|not found|\(404\)|Not Found", re.I)
 
 
+# Objects named by several attributes: type -> (CLI arguments, does the answer contain it?, import id)
+COMPOSITE_LOOKUPS = {
+    # e.g. an access entry made by hand with aws eks create-access-entry before Terraform managed it
+    "aws_eks_access_entry": (
+        lambda a: ["eks", "describe-access-entry", "--cluster-name", a["cluster_name"], "--principal-arn", a["principal_arn"]],
+        lambda a, out: True,
+        lambda a: f"{a['cluster_name']}:{a['principal_arn']}"),
+    "aws_eks_access_policy_association": (
+        lambda a: ["eks", "list-associated-access-policies", "--cluster-name", a["cluster_name"], "--principal-arn", a["principal_arn"]],
+        lambda a, out: any(p.get("policyArn") == a["policy_arn"] for p in (out or {}).get("associatedAccessPolicies", [])),
+        lambda a: f"{a['cluster_name']}#{a['principal_arn']}#{a['policy_arn']}"),
+}
+
+
 def exists(rtype, name, out):
     """Some lookups list instead of get: confirm the exact name is in the answer."""
     if rtype == "aws_cloudwatch_log_group":
@@ -272,7 +286,20 @@ def existing(plan, run=aws, kube=cli):
     for addr, rtype, after, actions in changes(plan):
         if actions != ["create"]:
             continue   # updates and replacements are already in the state
-        if rtype in LOOKUPS:
+        if rtype in COMPOSITE_LOOKUPS:
+            lookup, contains, import_id = COMPOSITE_LOOKUPS[rtype]
+            try:
+                args, ident = lookup(after), import_id(after)
+            except (KeyError, TypeError):
+                continue   # an attribute is not known until the apply
+            if not all(isinstance(x, str) for x in args):
+                continue
+            code, out, err = run(args, after.get("region"))
+            if code == 0 and contains(after, out):
+                found.append(dict(addr=addr, name=ident, import_id=ident, release_status=None, problem=None))
+            elif code != 0 and not NOT_FOUND.search(err):
+                print(f"::warning::{addr}: could not check whether {ident} exists: {err}")
+        elif rtype in LOOKUPS:
             attr, lookup = LOOKUPS[rtype]
             name = after.get(attr)
             if not isinstance(name, str) or not name:

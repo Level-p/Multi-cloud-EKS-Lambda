@@ -246,3 +246,26 @@ def test_apply_job_uninstalls_only_releases_left_by_a_failed_install():
     assert p.remove_failed_releases(platform_plan(), kube=fake_kube(KUBE, calls)) == 0
     assert [c for c in calls if c[:2] == ["helm", "uninstall"]] == [
         ["helm", "uninstall", "yace", "-n", "monitoring", "--wait", "--timeout", "5m"]]
+
+
+# --- EKS access made by hand (aws eks create-access-entry) before Terraform managed it ------------------------
+def test_manual_eks_access_entry_and_policy_are_adopted(tmp_path):
+    me = "arn:aws:iam::127214197057:user/levelp"
+    admin = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"
+    plan_ = {"resource_changes": [
+        {"address": f'module.eks.aws_eks_access_entry.admin["{me}"]', "mode": "managed", "type": "aws_eks_access_entry",
+         "change": {"actions": ["create"], "after": {"cluster_name": "agripulse-eks", "principal_arn": me, "region": "eu-west-2"}}},
+        {"address": f'module.eks.aws_eks_access_policy_association.admin["{me}"]', "mode": "managed",
+         "type": "aws_eks_access_policy_association",
+         "change": {"actions": ["create"], "after": {"cluster_name": "agripulse-eks", "principal_arn": me, "policy_arn": admin}}},
+    ]}
+    run = fake_aws({"describe-access-entry": (0, {"accessEntry": {}}, ""),
+                    "list-associated-access-policies": (0, {"associatedAccessPolicies": [{"policyArn": admin}]}, "")})
+    out = tmp_path / "adopted_imports.tf"
+    assert p.write_imports(plan_, str(out), run=run, kube=fake_kube({})) == 2
+    text = out.read_text()
+    assert f'id = "agripulse-eks:{me}"' in text and f'id = "agripulse-eks#{me}#{admin}"' in text
+    # the entry exists but without the admin policy: only the entry is adopted
+    run = fake_aws({"describe-access-entry": (0, {"accessEntry": {}}, ""),
+                    "list-associated-access-policies": (0, {"associatedAccessPolicies": []}, "")})
+    assert p.write_imports(plan_, str(out), run=run, kube=fake_kube({})) == 1

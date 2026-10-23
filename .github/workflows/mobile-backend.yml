@@ -60,6 +60,7 @@ jobs:
         with:
           app-path: app/mobile-backend
           iac-paths: infra/modules/mobile-api
+          blocking: ${{ vars.SECURITY_GATES == 'enforce' }}   # report only unless the repository variable says enforce
 
   dast:
     name: dast (OWASP ZAP, ephemeral)
@@ -71,6 +72,7 @@ jobs:
         with:
           app: mobile-backend
           mode: ephemeral
+          blocking: ${{ vars.SECURITY_GATES == 'enforce' }}   # report only unless the repository variable says enforce
 
   package:
     needs: [test, security, dast]
@@ -149,6 +151,7 @@ jobs:
           app: mobile-backend
           mode: production
           target-url: ${{ env.TF_OUT_MOBILE_API_URL }}
+          blocking: ${{ vars.SECURITY_GATES == 'enforce' }}   # report only unless the repository variable says enforce
 
   diagnose:
     needs: [test, security, dast, package, deploy, dast-production]

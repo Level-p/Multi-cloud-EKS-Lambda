@@ -43,9 +43,15 @@ variable "node_desired" {
 }
 
 variable "cluster_admin_arns" {
-  description = "Extra IAM users/roles with cluster admin, e.g. [\"arn:aws:iam::<account>:user/<you>\"] for kubectl"
+  description = "Extra IAM users/roles with cluster admin, e.g. [\"arn:aws:iam::<account>:user/<you>\"] for kubectl (GitHub variable CLUSTER_ADMIN_ARNS)"
   type        = list(string)
   default     = []
+
+  # An SSO session (arn:aws:sts::...:assumed-role/<role>/<session>) changes every sign-in: give the role instead
+  validation {
+    condition     = alltrue([for a in var.cluster_admin_arns : can(regex("^arn:aws:iam::[0-9]{12}:(user|role)/.+$", a))])
+    error_message = "Each cluster_admin_arns entry must be an IAM user or role ARN (arn:aws:iam::<account>:user/<name> or :role/<name>). For SSO use the role ARN, e.g. arn:aws:iam::<account>:role/AWSReservedSSO_<...>, not an sts assumed-role ARN."
+  }
 }
 
 # ---------------- database ----------------

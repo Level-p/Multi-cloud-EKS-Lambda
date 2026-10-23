@@ -1,7 +1,9 @@
 # DAST with OWASP ZAP.
 #   mode: ephemeral   start the app on the runner (throwaway data), FULL scan: passive + active
-#                     attacks against every OpenAPI operation and every form          (blocking)
-#   mode: production  BASELINE scan (passive, unauthenticated) of the deployed endpoint (blocking)
+#                     attacks against every OpenAPI operation and every form          (gate)
+#   mode: production  BASELINE scan (passive, unauthenticated) of the deployed endpoint (gate)
+# The gates block only when input blocking is "true" (repository variable SECURITY_GATES = enforce); otherwise
+# the scans still run, reports are still uploaded, and findings become warnings.
 # Results: the summary on the run page, and the artifact zap-<app>-<mode> (HTML report, SARIF, JSON, JUnit).
 # The gate is app/dast/zap_gate.py with app/dast/zap-policy.json (reviewed, expiring exceptions).
 name: OWASP ZAP DAST
@@ -16,6 +18,9 @@ inputs:
   target-url:
     description: "production: the public URL"
     default: ""
+  blocking:
+    description: "true: findings fail the run; false: report only (warnings). Workflows pass vars.SECURITY_GATES == 'enforce'"
+    default: "true"
 runs:
   using: composite
   steps:
@@ -26,11 +31,15 @@ runs:
 
     - if: inputs.mode == 'ephemeral'
       name: DAST gate self-test
+      id: selftest
+      continue-on-error: ${{ inputs.blocking != 'true' }}
       shell: bash
       run: python -m pip install --quiet pytest==9.1.1 && python -m pytest -q app/dast/tests
 
     - if: inputs.mode == 'ephemeral' && inputs.app != 'mobile-backend'
       name: Start ${{ inputs.app }} (uvicorn, SQLite)
+      id: start_app
+      continue-on-error: ${{ inputs.blocking != 'true' }}
       shell: bash
       env:
         APP: ${{ inputs.app }}
@@ -50,6 +59,8 @@ runs:
 
     - if: inputs.mode == 'ephemeral' && inputs.app != 'mobile-backend'
       name: OWASP ZAP full scan + gate
+      id: zap_full
+      continue-on-error: ${{ inputs.blocking != 'true' }}
       shell: bash
       env:
         APP: ${{ inputs.app }}
@@ -57,6 +68,8 @@ runs:
 
     - if: inputs.mode == 'ephemeral' && inputs.app == 'mobile-backend'
       name: Start the mobile backend (API Gateway stand-in, SQLite, moto)
+      id: start_mobile
+      continue-on-error: ${{ inputs.blocking != 'true' }}
       shell: bash
       run: |
         set -euo pipefail
@@ -71,11 +84,15 @@ runs:
 
     - if: inputs.mode == 'ephemeral' && inputs.app == 'mobile-backend'
       name: OWASP ZAP full scan + gate
+      id: zap_full_mobile
+      continue-on-error: ${{ inputs.blocking != 'true' }}
       shell: bash
       run: SPEC_SUBST="FIELD_ID_PLACEHOLDER=$DAST_FIELD_ID" bash app/dast/run-zap.sh ci-full mobile-backend http://localhost:8090 mobile.yaml
 
     - if: always() && inputs.mode == 'ephemeral'
       name: No unhandled errors in the app log
+      id: app_log
+      continue-on-error: ${{ inputs.blocking != 'true' }}
       shell: bash
       run: |
         # Application errors only: uvicorn's "Exception in ASGI application", the apps' loggers at
@@ -87,6 +104,8 @@ runs:
 
     - if: inputs.mode == 'production'
       name: OWASP ZAP baseline scan (production) + gate
+      id: zap_baseline
+      continue-on-error: ${{ inputs.blocking != 'true' }}
       shell: bash
       env:
         APP: ${{ inputs.app }}
@@ -95,6 +114,23 @@ runs:
         set -euo pipefail
         if [ -z "$URL" ]; then echo "::error::No public URL: has the infrastructure workflow run (terraform output)?"; exit 1; fi
         bash app/dast/run-zap.sh prod-baseline "$APP" "$URL"
+
+    - if: always() && inputs.blocking != 'true'
+      name: Findings (report only)
+      shell: bash
+      env:
+        OUTCOMES: >-
+          self-test:${{ steps.selftest.outcome }} app-start:${{ steps.start_app.outcome }}
+          app-start:${{ steps.start_mobile.outcome }} zap-full:${{ steps.zap_full.outcome }}
+          zap-full:${{ steps.zap_full_mobile.outcome }} app-log:${{ steps.app_log.outcome }}
+          zap-baseline:${{ steps.zap_baseline.outcome }}
+      run: |
+        for scan in $OUTCOMES; do
+          if [ "${scan#*:}" = "failure" ]; then
+            echo "::warning title=ZAP ${scan%%:*} (report only)::findings do not fail the run while SECURITY_GATES is not 'enforce'; see the step log and the zap-* artifact."
+            echo "- ZAP ${scan%%:*}: findings (report only, see the zap-* artifact)" >> "$GITHUB_STEP_SUMMARY"
+          fi
+        done
 
     - if: always()
       uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

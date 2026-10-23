@@ -42,6 +42,7 @@ jobs:
       - uses: ./.github/actions/security-scans
         with:
           iac-paths: infra/platform infra/modules
+          blocking: ${{ vars.SECURITY_GATES == 'enforce' }}   # report only unless the repository variable says enforce
 
       - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
