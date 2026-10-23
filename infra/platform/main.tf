@@ -7,6 +7,7 @@
 #   k8s-controllers    AWS Load Balancer Controller (fills the ALB target groups), Secrets Store CSI (AWS)
 #   k8s-policy         Kyverno: only our registry and pinned images, Cosign signatures checked at admission
 #   k8s-gitops         app namespaces, Redis password, Argo CD + the two Applications, Argo Rollouts
+#   k8s-edge           https://argocd.<zone> and https://grafana.<zone>: TargetGroupBindings to the edge's ALB
 # Everything these modules need from AWS comes from the aws stack's state (provider.tf).
 # ---------------------------------------------------------------------------
 
@@ -21,6 +22,7 @@ module "k8s_observability" {
   webhook_token_secret_arn    = local.aws.webhook_token_secret_arn
   grafana_password_secret_arn = local.aws.grafana_password_secret_arn
   slack_webhook_secret_arn    = local.aws.slack_webhook_secret_arn
+  grafana_host                = lookup(local.aws.hosts, "grafana", "grafana.missing-run-infra-aws-first")
 }
 
 module "k8s_controllers" {
@@ -46,6 +48,7 @@ module "k8s_gitops" {
   git_repo_url   = var.git_repo_url
   git_repo_token = var.git_repo_token
   git_revision   = var.git_revision
+  argocd_host    = lookup(local.aws.hosts, "argocd", "argocd.missing-run-infra-aws-first")
 
   common_values = {
     image = { registry = local.aws.ecr_registry }
@@ -78,4 +81,15 @@ module "k8s_gitops" {
 
   # Argo CD syncs the apps only once their TargetGroupBindings, secrets and admission policies can work
   depends_on = [module.k8s_controllers, module.k8s_policy, module.k8s_observability]
+}
+
+# Argo CD and Grafana behind the same CloudFront + WAF + ALB as the apps (their own sign-in)
+module "k8s_edge" {
+  source = "../modules/k8s-edge"
+  bindings = [
+    { name = "argocd", namespace = "argocd", service = "argocd-server", port = 80, targetGroupArn = lookup(local.aws.target_group_arns, "argocd", "") },
+    { name = "grafana", namespace = "monitoring", service = "kube-prometheus-stack-grafana", port = 80, targetGroupArn = lookup(local.aws.target_group_arns, "grafana", "") },
+  ]
+  # the controller (the TargetGroupBinding kind), the argocd namespace and the Grafana Service must exist
+  depends_on = [module.k8s_controllers, module.k8s_gitops, module.k8s_observability]
 }

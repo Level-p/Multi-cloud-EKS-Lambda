@@ -3,7 +3,7 @@
 #
 #   media   static images from S3 (Origin Access Control, cached, security headers); only catalog/ and the
 #           uploads GuardDuty tagged NO_THREATS_FOUND are readable (bucket policy below)
-#   app     agripulse.<zone> + incidents.<zone> -> the ALB (HTTPS), never cached; the viewer's Host header,
+#   app     agripulse, incidents, argocd and grafana.<zone> -> the ALB (HTTPS), never cached; the viewer's Host header,
 #           cookies and query strings go to the origin (oauth2-proxy and the ALB rules need them)
 #   api     api.<zone> -> API Gateway's prod stage, never cached; Authorization is forwarded through the cache
 #           key (the only way CloudFront forwards it), so a response can never reach another farmer
@@ -106,8 +106,8 @@ resource "aws_s3_bucket_policy" "media" {
 # ---------------- app: web app + incident blog (ALB) ----------------
 resource "aws_cloudfront_distribution" "app" {
   enabled         = true
-  comment         = "AgriPulse web app and incident blog (ALB -> EKS)"
-  aliases         = [local.hosts["web"], local.hosts["incidents"]]
+  comment         = "AgriPulse web app, incident blog, Argo CD and Grafana (ALB -> EKS)"
+  aliases         = [for k in ["web", "incidents", "argocd", "grafana"] : local.hosts[k]]
   price_class     = "PriceClass_100"
   http_version    = "http2and3"
   is_ipv6_enabled = true
@@ -236,6 +236,8 @@ locals {
   aliases = {
     web       = aws_cloudfront_distribution.app
     incidents = aws_cloudfront_distribution.app
+    argocd    = aws_cloudfront_distribution.app
+    grafana   = aws_cloudfront_distribution.app
     api       = aws_cloudfront_distribution.api
     media     = aws_cloudfront_distribution.media
   }

@@ -28,3 +28,8 @@ variable "app_values" {
   description = "Per-chart values merged over common_values (each needs an aws and a db map)"
   type        = any
 }
+
+variable "argocd_host" {
+  description = "Public host name of Argo CD (argocd.<zone>, served through CloudFront + WAF + the ALB)"
+  type        = string
+}

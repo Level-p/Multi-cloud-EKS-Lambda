@@ -12,8 +12,8 @@ variable "subdomains" {
   type        = map(string)
 
   validation {
-    condition     = alltrue([for k in ["web", "incidents", "media", "api"] : contains(keys(var.subdomains), k)])
-    error_message = "subdomains needs a value for web, incidents, media and api."
+    condition     = alltrue([for k in ["web", "incidents", "media", "api", "argocd", "grafana"] : contains(keys(var.subdomains), k)])
+    error_message = "subdomains needs a value for web, incidents, media, api, argocd and grafana."
   }
 }
 
@@ -26,7 +26,7 @@ variable "public_subnet_ids" {
 }
 
 variable "cluster_security_group_id" {
-  description = "Security group of the EKS nodes and pods (the ALB reaches oauth2-proxy pods in it)"
+  description = "Security group of the EKS nodes and pods (the ALB reaches oauth2-proxy, Argo CD and Grafana pods in it)"
   type        = string
 }
 

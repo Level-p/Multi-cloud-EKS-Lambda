@@ -52,8 +52,9 @@ resource "helm_release" "argocd" {
   namespace        = "argocd"
   create_namespace = true
   values = [yamlencode({
-    configs = { params = { "server.insecure" = true } }
-    server  = { service = { type = "ClusterIP" } } # reach it with kubectl port-forward (EKS access entries apply)
+    global  = { domain = var.argocd_host }              # https://argocd.<zone> (links, redirects)
+    configs = { params = { "server.insecure" = true } } # TLS ends at CloudFront and the ALB; plain HTTP to the pod
+    server  = { service = { type = "ClusterIP" } }      # public only through the edge (modules/k8s-edge)
   })]
 }
 

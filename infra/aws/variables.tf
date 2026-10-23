@@ -16,7 +16,7 @@ variable "dns_zone_name" {
 
 variable "subdomains" {
   type    = map(string)
-  default = { web = "agripulse", incidents = "incidents", api = "api", media = "media" }
+  default = { web = "agripulse", incidents = "incidents", api = "api", media = "media", argocd = "argocd", grafana = "grafana" }
 }
 
 variable "az_count" {

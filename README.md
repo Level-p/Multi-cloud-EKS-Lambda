@@ -18,6 +18,7 @@
 |---|---|
 | [docs/AgriPulse-AWS-Deployment-Guide.docx](docs/AgriPulse-AWS-Deployment-Guide.docx) | Architecture, bootstrap, GitHub settings, first deployment, checks, security controls, day-to-day operations, troubleshooting, cost, teardown |
 | [docs/AgriPulse-App-Guide.docx](docs/AgriPulse-App-Guide.docx) | The three applications: APIs, data, the code file by file, running and testing locally, changing the application |
+| [docs/AgriPulse-Deployment-Error-Report.docx](docs/AgriPulse-Deployment-Error-Report.docx) | Every error of the first deployment: root cause, fix, and the guard that now prevents it |
 | [architecture/](architecture/) | AWS architecture, CI/CD pipelines, request flow with the check at every hop (`.drawio` + PNG) |
 | [app/dast/README.md](app/dast/README.md) | OWASP ZAP in the pipelines |
 
@@ -27,6 +28,8 @@
 |---|---|
 | `https://agripulse.mfon21.space` | WAF -> CloudFront -> ALB -> oauth2-proxy (Cognito staff) -> web app (EKS) |
 | `https://incidents.mfon21.space` | WAF -> CloudFront -> ALB -> oauth2-proxy (Cognito staff) -> incident blog (EKS) |
+| `https://argocd.mfon21.space` | WAF -> CloudFront -> ALB -> Argo CD (user `admin`, password: `terraform output argocd_password_command` in `infra/platform`) |
+| `https://grafana.mfon21.space` | WAF -> CloudFront -> ALB -> Grafana (user `admin`, password in Secrets Manager `agripulse/platform/grafana-admin-password`) |
 | `https://api.mfon21.space` | WAF -> CloudFront -> API Gateway (Cognito farmers) -> Lambda |
 | `https://media.mfon21.space` | WAF -> CloudFront -> S3 (static images; uploads only after GuardDuty marked them clean) |
 

@@ -3,10 +3,12 @@
 #
 #   https://agripulse.<zone>  -> CloudFront "app"   -> ALB -> EKS (oauth2-proxy -> agripulse-web)
 #   https://incidents.<zone>  -> CloudFront "app"   -> ALB -> EKS (oauth2-proxy -> incident-blog)
+#   https://argocd.<zone>     -> CloudFront "app"   -> ALB -> EKS (Argo CD, its own sign-in)
+#   https://grafana.<zone>    -> CloudFront "app"   -> ALB -> EKS (Grafana, its own sign-in)
 #   https://api.<zone>        -> CloudFront "api"   -> API Gateway -> Lambda
 #   https://media.<zone>      -> CloudFront "media" -> S3 (static images: catalog + clean uploads)
 #
-# CloudFront's certificate must be in us-east-1 (all four names); the ALB's is regional (the two app names,
+# CloudFront's certificate must be in us-east-1 (all six names); the ALB's is regional (the four ALB names,
 # which CloudFront checks because it forwards the viewer's Host header to the ALB).
 # ---------------------------------------------------------------------------
 
@@ -22,7 +24,7 @@ locals {
 resource "aws_acm_certificate" "cloudfront" {
   provider                  = aws.us_east_1
   domain_name               = local.hosts["web"]
-  subject_alternative_names = [for k in ["incidents", "api", "media"] : local.hosts[k]]
+  subject_alternative_names = [for k in ["incidents", "api", "media", "argocd", "grafana"] : local.hosts[k]]
   validation_method         = "DNS"
   lifecycle {
     create_before_destroy = true
@@ -31,7 +33,7 @@ resource "aws_acm_certificate" "cloudfront" {
 
 resource "aws_acm_certificate" "alb" {
   domain_name               = local.hosts["web"]
-  subject_alternative_names = [local.hosts["incidents"]]
+  subject_alternative_names = [for k in ["incidents", "argocd", "grafana"] : local.hosts[k]]
   validation_method         = "DNS"
   lifecycle {
     create_before_destroy = true

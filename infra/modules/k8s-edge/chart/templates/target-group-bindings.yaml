@@ -1,0 +1,21 @@
+# One TargetGroupBinding per platform tool, in the namespace of its Service (target type ip: straight to the pods)
+{{- range .Values.bindings }}
+{{- if not .targetGroupArn }}
+{{- fail (printf "bindings[%s].targetGroupArn is required (run infra-aws first)" .name) }}
+{{- end }}
+---
+apiVersion: elbv2.k8s.aws/v1beta1
+kind: TargetGroupBinding
+metadata:
+  name: {{ .name }}
+  namespace: {{ .namespace }}
+  labels:
+    app.kubernetes.io/managed-by: {{ $.Release.Service }}
+    app.kubernetes.io/part-of: agripulse-platform
+spec:
+  targetGroupARN: {{ .targetGroupArn | quote }}
+  targetType: ip
+  serviceRef:
+    name: {{ .service }}
+    port: {{ .port }}
+{{- end }}

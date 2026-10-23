@@ -3,7 +3,7 @@ output "hosts" {
 }
 
 output "target_group_arns" {
-  description = "Target group per app: each chart's TargetGroupBinding fills it with oauth2-proxy pod IPs"
+  description = "Target group per host: a TargetGroupBinding fills it with pod IPs (app charts, k8s-edge)"
   value       = { for k, tg in aws_lb_target_group.app : k => tg.arn }
 }
 

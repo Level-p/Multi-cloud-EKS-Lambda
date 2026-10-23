@@ -1,0 +1,2 @@
+# All values come from infra/modules/k8s-edge (main.tf)
+bindings: []   # - { name, namespace, service, port (the Service port), targetGroupArn }

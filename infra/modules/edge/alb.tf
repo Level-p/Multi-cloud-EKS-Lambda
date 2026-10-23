@@ -3,10 +3,12 @@
 #   - its security group admits HTTPS from CloudFront's origin-facing address ranges only (AWS managed prefix list)
 #   - every listener rule also requires X-Origin-Verify (a secret only CloudFront sends): another CloudFront
 #     distribution, or anyone who finds the ALB, gets a 403
-#   - host-based rules: agripulse.<zone> -> target group "web", incidents.<zone> -> target group "incidents"
+#   - host-based rules, one target group each: agripulse.<zone> and incidents.<zone> -> oauth2-proxy (Cognito
+#     staff sign-in) in front of each app; argocd.<zone> -> Argo CD and grafana.<zone> -> Grafana (their own
+#     sign-in: Argo CD admin, Grafana admin from Secrets Manager)
 # Terraform owns the ALB, its listener, rules, certificate and target groups. Inside EKS the AWS Load Balancer
-# Controller only keeps each target group filled with the oauth2-proxy pod IPs (a TargetGroupBinding in each
-# chart), so destroying the cluster never leaves an orphaned load balancer.
+# Controller only keeps each target group filled with pod IPs (TargetGroupBindings: one in each app chart, the
+# platform tools' in infra/modules/k8s-edge), so destroying the cluster never leaves an orphaned load balancer.
 # ---------------------------------------------------------------------------
 
 data "aws_ec2_managed_prefix_list" "cloudfront" {
@@ -14,7 +16,14 @@ data "aws_ec2_managed_prefix_list" "cloudfront" {
 }
 
 locals {
-  alb_apps = { web = local.hosts["web"], incidents = local.hosts["incidents"] }
+  # Priorities are fixed: a rule whose priority changes is replaced, so new hosts take new numbers
+  alb_apps = {
+    incidents = { host = local.hosts["incidents"], port = 4180, health = "/ping", priority = 10 } # oauth2-proxy
+    web       = { host = local.hosts["web"], port = 4180, health = "/ping", priority = 11 }       # oauth2-proxy
+    argocd    = { host = local.hosts["argocd"], port = 8080, health = "/healthz", priority = 12 } # argocd-server
+    grafana   = { host = local.hosts["grafana"], port = 3000, health = "/api/health", priority = 13 }
+  }
+  pod_ports = toset([for a in values(local.alb_apps) : tostring(a.port)])
 }
 
 resource "aws_security_group" "alb" {
@@ -33,23 +42,37 @@ resource "aws_vpc_security_group_ingress_rule" "alb_from_cloudfront" {
   ip_protocol       = "tcp"
 }
 
+# One rule per pod port: 4180 oauth2-proxy, 8080 argocd-server, 3000 Grafana
 resource "aws_vpc_security_group_egress_rule" "alb_to_pods" {
+  for_each                     = local.pod_ports
   security_group_id            = aws_security_group.alb.id
-  description                  = "oauth2-proxy pods"
+  description                  = "ALB to pods on ${each.key}"
   referenced_security_group_id = var.cluster_security_group_id
-  from_port                    = 4180
-  to_port                      = 4180
+  from_port                    = tonumber(each.key)
+  to_port                      = tonumber(each.key)
   ip_protocol                  = "tcp"
 }
 
-# Pods use the nodes' security group (the cluster security group): admit the ALB on oauth2-proxy's port only
+# Pods use the nodes' security group (the cluster security group): admit the ALB on those ports only
 resource "aws_vpc_security_group_ingress_rule" "pods_from_alb" {
+  for_each                     = local.pod_ports
   security_group_id            = var.cluster_security_group_id
-  description                  = "ALB to oauth2-proxy pods"
+  description                  = "ALB to pods on ${each.key}"
   referenced_security_group_id = aws_security_group.alb.id
-  from_port                    = 4180
-  to_port                      = 4180
+  from_port                    = tonumber(each.key)
+  to_port                      = tonumber(each.key)
   ip_protocol                  = "tcp"
+}
+
+# The 4180 rules existed before the per-port rules: keep them (a new rule beside the old one would be a duplicate)
+moved {
+  from = aws_vpc_security_group_egress_rule.alb_to_pods
+  to   = aws_vpc_security_group_egress_rule.alb_to_pods["4180"]
+}
+
+moved {
+  from = aws_vpc_security_group_ingress_rule.pods_from_alb
+  to   = aws_vpc_security_group_ingress_rule.pods_from_alb["4180"]
 }
 
 resource "aws_lb" "web" {
@@ -66,14 +89,14 @@ resource "aws_lb" "web" {
 resource "aws_lb_target_group" "app" {
   for_each             = local.alb_apps
   name                 = "${var.name}-${each.key}"
-  port                 = 4180
+  port                 = each.value.port
   protocol             = "HTTP"
   target_type          = "ip" # pod IPs, registered by the load balancer controller
   vpc_id               = var.vpc_id
   deregistration_delay = 30
 
   health_check {
-    path                = "/ping" # oauth2-proxy's own health endpoint (no sign-in needed)
+    path                = each.value.health # health endpoints that need no sign-in
     matcher             = "200"
     interval            = 15
     healthy_threshold   = 2
@@ -102,11 +125,11 @@ resource "aws_lb_listener" "https" {
 resource "aws_lb_listener_rule" "app" {
   for_each     = local.alb_apps
   listener_arn = aws_lb_listener.https.arn
-  priority     = index(keys(local.alb_apps), each.key) + 10
+  priority     = each.value.priority
 
   condition {
     host_header {
-      values = [each.value]
+      values = [each.value.host]
     }
   }
 

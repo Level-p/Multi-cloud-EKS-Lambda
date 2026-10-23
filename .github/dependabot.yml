@@ -1,0 +1,45 @@
+# ---------------------------------------------------------------------------
+# Dependabot: every pinned dependency is kept current by pull requests, so a new advisory arrives as a PR
+# that the normal pipelines test (pytest, pip-audit, Trivy, ZAP, terraform plan + preflight), not as a red
+# pip-audit on a deployment run.
+#   Security updates  as soon as an advisory is published (needs Settings > Code security > Dependabot
+#                     security updates), one PR per advisory
+#   Version updates   weekly, grouped per ecosystem and folder to keep the PR count low
+# Hashes in requirements.txt are updated with the versions (pip-audit runs with --require-hashes).
+# ---------------------------------------------------------------------------
+version: 2
+
+updates:
+  - package-ecosystem: pip
+    directories: ["/app/web", "/app/incident-blog", "/app/mobile-backend"]
+    schedule: { interval: weekly, day: monday }
+    open-pull-requests-limit: 10
+    labels: [dependencies, python]
+    groups:
+      python-minor-and-patch:
+        update-types: [minor, patch]
+
+  - package-ecosystem: docker
+    directories: ["/app/web", "/app/incident-blog"]
+    schedule: { interval: weekly, day: monday }
+    labels: [dependencies, docker]
+    groups:
+      base-images:
+        patterns: ["*"]
+
+  - package-ecosystem: github-actions
+    # workflows (/) and the composite actions they use
+    directories: ["/", "/.github/actions/*"]
+    schedule: { interval: weekly, day: monday }
+    labels: [dependencies, github-actions]
+    groups:
+      actions:
+        patterns: ["*"]
+
+  - package-ecosystem: terraform
+    directories: ["/infra/aws", "/infra/platform", "/infra/bootstrap", "/infra/modules/*"]
+    schedule: { interval: weekly, day: monday }
+    labels: [dependencies, terraform]
+    groups:
+      providers:
+        patterns: ["*"]

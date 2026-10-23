@@ -4,7 +4,8 @@
 #                   queries it; Tempo writes span metrics into it (observability.tf)
 #   Alertmanager    EVERY alert -> Slack (the one alert channel); critical/warning also open an incident in the
 #                   incident blog
-#   Grafana         Prometheus + Tempo + Loki, linked both ways; admin password from Secrets Manager
+#   Grafana         Prometheus + Tempo + Loki, linked both ways; admin password from Secrets Manager;
+#                   public at https://grafana.<zone> (CloudFront + WAF + ALB, modules/k8s-edge)
 # EKS runs the control plane itself: etcd, the scheduler, the controller manager (and kube-proxy's
 # metrics, bound to localhost) cannot be scraped, so those jobs are off instead of alerting forever.
 # ---------------------------------------------------------------------------
@@ -115,6 +116,8 @@ resource "helm_release" "monitoring" {
     grafana = {
       enabled = true
       admin   = { existingSecret = "grafana-admin", userKey = "admin-user", passwordKey = "admin-password" } # gitleaks:allow
+      # https://grafana.<zone> through the edge (modules/k8s-edge): links, redirects and the sign-in cookie
+      "grafana.ini" = { server = { root_url = "https://${var.grafana_host}" }, security = { cookie_secure = true } }
       # Tempo (traces) and Loki (logs) from the OpenTelemetry pipeline (observability.tf), linked to each other
       additionalDataSources = local.grafana_otel_datasources
       # A dot on a latency graph (exemplar) opens the trace behind it
