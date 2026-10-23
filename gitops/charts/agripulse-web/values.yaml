@@ -1,31 +1,26 @@
 # Values marked (Terraform) are injected by the Argo CD Application created in infra/platform (gitops.tf),
 # so no environment-specific id ever lives in Git. The pipeline only changes image.tag.
 image:
-  registry: ""                 # (Terraform) <account>.dkr.ecr.<region>.amazonaws.com
+  registry: "" # (Terraform) <account>.dkr.ecr.<region>.amazonaws.com
   repository: agripulse/web
-  tag: initial                 # written by the web pipeline (GitOps commit)
-
-host: ""                       # (Terraform) agripulse.<zone>
-priceAdmins: ""                # (Terraform) comma-separated e-mails
-
+  tag: r7-c4bdf800344552658e6671a0aa0761147b4180f9 # written by the web pipeline (GitOps commit)
+host: "" # (Terraform) agripulse.<zone>
+priceAdmins: "" # (Terraform) comma-separated e-mails
 aws:
-  region: ""                   # (Terraform)
-  targetGroupArn: ""           # (Terraform) the ALB target group this app's oauth2-proxy pods are registered in
-  albSourceCidrs: []           # (Terraform) public subnets of the ALB: the only source oauth2-proxy accepts
-  secretPrefix: agripulse      # (Terraform) Secrets Manager names: <prefix>/web/*, <prefix>/shared/*
-
+  region: "" # (Terraform)
+  targetGroupArn: "" # (Terraform) the ALB target group this app's oauth2-proxy pods are registered in
+  albSourceCidrs: [] # (Terraform) public subnets of the ALB: the only source oauth2-proxy accepts
+  secretPrefix: agripulse # (Terraform) Secrets Manager names: <prefix>/web/*, <prefix>/shared/*
 db:
-  host: ""                     # (Terraform) RDS PostgreSQL endpoint (the Multi-AZ primary)
-  port: 5432                   # (Terraform)
-  name: agripulse              # (Terraform) this app's database
-  user: agripulse_web          # (Terraform) its IAM-authenticated PostgreSQL user
-  masterSecretId: ""           # (Terraform) RDS-managed master secret: read by the SQL bootstrap Job only
-  users: {}                    # (Terraform) database => user, created by the SQL bootstrap Job
-
+  host: "" # (Terraform) RDS PostgreSQL endpoint (the Multi-AZ primary)
+  port: 5432 # (Terraform)
+  name: agripulse # (Terraform) this app's database
+  user: agripulse_web # (Terraform) its IAM-authenticated PostgreSQL user
+  masterSecretId: "" # (Terraform) RDS-managed master secret: read by the SQL bootstrap Job only
+  users: {} # (Terraform) database => user, created by the SQL bootstrap Job
 auth:
-  issuerUrl: ""                # (Terraform) Cognito staff user pool (OIDC issuer)
-  clientId: ""                 # (Terraform) oauth2-proxy's app client
-
+  issuerUrl: "" # (Terraform) Cognito staff user pool (OIDC issuer)
+  clientId: "" # (Terraform) oauth2-proxy's app client
 # Redis cache (Valkey) running in the cluster: templates/redis.yaml. Images are pinned by digest
 # and allowed by name in Kyverno (infra/modules/k8s-policy): change both together.
 redis:
@@ -33,25 +28,21 @@ redis:
   exporterImage: docker.io/oliver006/redis_exporter:v1.93.0@sha256:6ca518a72f30f7f576ef92963de1b91d3c3f5fd3aeac949f878bfda183587820
   maxMemory: 200mb
   resources:
-    requests: { cpu: 50m, memory: 64Mi }
-    limits: { memory: 256Mi }
-
+    requests: {cpu: 50m, memory: 64Mi}
+    limits: {memory: 256Mi}
 rollout:
   replicas: 3
   # Canary: 25% of pods, analysis, 50%, analysis, 100%. A failed analysis aborts and scales the canary down.
   successRateThreshold: "0.99"
   latencyP95Seconds: "0.5"
-
 oauth2Proxy:
   image: quay.io/oauth2-proxy/oauth2-proxy:v7.15.5
   replicas: 2
-
 resources:
-  requests: { cpu: 100m, memory: 192Mi }
-  limits: { memory: 384Mi }
-
+  requests: {cpu: 100m, memory: 192Mi}
+  limits: {memory: 384Mi}
 # OpenTelemetry: traces and logs over OTLP/HTTP to the collector in the "monitoring" namespace, which
 # forwards traces to Tempo and logs to Loki (both shown in Grafana). Empty endpoint = off.
 telemetry:
   otlpEndpoint: http://otel-collector.monitoring.svc:4318
-  samplingRatio: "1.0"   # share of new traces kept (parent-based); lower it if traffic grows
+  samplingRatio: "1.0" # share of new traces kept (parent-based); lower it if traffic grows
