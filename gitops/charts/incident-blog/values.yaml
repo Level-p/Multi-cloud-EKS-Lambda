@@ -1,39 +1,31 @@
 # Values marked (Terraform) are injected by the Argo CD Application (infra/platform/gitops.tf).
 image:
-  registry: ""                 # (Terraform) <account>.dkr.ecr.<region>.amazonaws.com
+  registry: "" # (Terraform) <account>.dkr.ecr.<region>.amazonaws.com
   repository: agripulse/incident-blog
-  tag: initial                 # written by the incident-blog pipeline
-
-host: ""                       # (Terraform) incidents.<zone>
-
+  tag: r6-c4bdf800344552658e6671a0aa0761147b4180f9 # written by the incident-blog pipeline
+host: "" # (Terraform) incidents.<zone>
 aws:
-  region: ""                   # (Terraform)
-  targetGroupArn: ""           # (Terraform) the ALB target group of incidents.<zone>
-  albSourceCidrs: []           # (Terraform) public subnets of the ALB
-  secretPrefix: agripulse      # (Terraform) Secrets Manager names: <prefix>/incidents/*, <prefix>/shared/*
-
+  region: "" # (Terraform)
+  targetGroupArn: "" # (Terraform) the ALB target group of incidents.<zone>
+  albSourceCidrs: [] # (Terraform) public subnets of the ALB
+  secretPrefix: agripulse # (Terraform) Secrets Manager names: <prefix>/incidents/*, <prefix>/shared/*
 db:
-  host: ""                     # (Terraform) RDS PostgreSQL endpoint
-  port: 5432                   # (Terraform)
-  name: incidents              # (Terraform) this app's database
-  user: agripulse_incidents    # (Terraform) its IAM-authenticated PostgreSQL user
-
+  host: "" # (Terraform) RDS PostgreSQL endpoint
+  port: 5432 # (Terraform)
+  name: incidents # (Terraform) this app's database
+  user: agripulse_incidents # (Terraform) its IAM-authenticated PostgreSQL user
 auth:
-  issuerUrl: ""                # (Terraform) Cognito staff user pool (OIDC issuer)
-  clientId: ""                 # (Terraform) oauth2-proxy's app client
-
+  issuerUrl: "" # (Terraform) Cognito staff user pool (OIDC issuer)
+  clientId: "" # (Terraform) oauth2-proxy's app client
 replicas: 2
-
 oauth2Proxy:
   image: quay.io/oauth2-proxy/oauth2-proxy:v7.15.5
   replicas: 2
-
 resources:
-  requests: { cpu: 50m, memory: 160Mi }
-  limits: { memory: 320Mi }
-
+  requests: {cpu: 50m, memory: 160Mi}
+  limits: {memory: 320Mi}
 # OpenTelemetry: traces and logs over OTLP/HTTP to the collector in the "monitoring" namespace, which
 # forwards traces to Tempo and logs to Loki (both shown in Grafana). Empty endpoint = off.
 telemetry:
   otlpEndpoint: http://otel-collector.monitoring.svc:4318
-  samplingRatio: "1.0"   # share of new traces kept (parent-based); lower it if traffic grows
+  samplingRatio: "1.0" # share of new traces kept (parent-based); lower it if traffic grows
