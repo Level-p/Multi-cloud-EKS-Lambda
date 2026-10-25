@@ -49,10 +49,16 @@ jobs:
         env:
           AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          CLUSTER_ADMIN_ARNS: ${{ vars.CLUSTER_ADMIN_ARNS }}
         run: |
           [ -n "$AWS_ROLE_ARN" ] || { echo "::error::Secret AWS_ROLE_ARN is not set (printed by infra/bootstrap.sh)."; exit 1; }
           # Slack is the one alert channel: no deployment without it
           [ -n "$SLACK_WEBHOOK_URL" ] || { echo "::error::Secret SLACK_WEBHOOK_URL is not set (a Slack incoming webhook: every alert goes there)."; exit 1; }
+          # Without it nobody but the pipeline can use kubectl, and "aws eks update-kubeconfig" ends in "You must be
+          # logged in to the server". Unset is an error; a deliberate [] (no human admins) is allowed.
+          [ -n "$CLUSTER_ADMIN_ARNS" ] || { echo "::error::Variable CLUSTER_ADMIN_ARNS is not set. Add it (Settings > Secrets and variables > Actions > Variables) as a JSON list, e.g. [\"arn:aws:iam::<account>:user/<you>\"] (aws sts get-caller-identity prints yours), or [] for no kubectl admins."; exit 1; }
+          echo "$CLUSTER_ADMIN_ARNS" | jq -e 'type == "array" and all(.[]; type == "string")' >/dev/null \
+            || { echo "::error::Variable CLUSTER_ADMIN_ARNS must be a JSON list of ARN strings, e.g. [\"arn:aws:iam::<account>:user/<you>\"]; it is: $CLUSTER_ADMIN_ARNS"; exit 1; }
 
       - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
@@ -79,7 +85,7 @@ jobs:
         env:
           TF_VAR_slack_webhook_url: ${{ secrets.SLACK_WEBHOOK_URL }}   # stored in Secrets Manager for every alert path
           # IAM users/roles that get kubectl admin (aws eks update-kubeconfig): repository variable, JSON list
-          TF_VAR_cluster_admin_arns: ${{ vars.CLUSTER_ADMIN_ARNS != '' && vars.CLUSTER_ADMIN_ARNS || '[]' }}
+          TF_VAR_cluster_admin_arns: ${{ vars.CLUSTER_ADMIN_ARNS }}   # checked above: set, and a JSON list
         run: |
           terraform init -input=false
           terraform fmt -check -recursive . ../modules
