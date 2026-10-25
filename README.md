@@ -18,7 +18,7 @@ with its own database, all deployed by **Argo CD** from `gitops/`. Each release 
 | To | Run | What happens |
 |---|---|---|
 | **staging** | **app** (pick a service or `all`), or just merge to `main`: only the services that changed are built | test, scan, build, sign -> commit to `gitops/services/<service>/staging.yaml` -> Argo CD syncs `<service>-staging` |
-| **production** | **promote** (pick a service or `all`), then approve | the image staging runs -> commit to `production.yaml` -> Argo CD syncs `<service>-production` |
+| **production** | **promote** (pick a service or `all`), approve, then **SYNC** in Argo CD | the image staging runs -> commit to `production.yaml` -> `<service>-production` shows OutOfSync and the diff -> you click **SYNC** |
 
 | | |
 |---|---|

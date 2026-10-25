@@ -1,5 +1,6 @@
 # ---------------------------------------------------------------------------
-# GitOps: Argo CD syncs every service into its own namespace, in staging and in production, from this repository:
+# GitOps: Argo CD syncs every service into its own namespace, in staging (automatically) and in production (when a
+# person presses SYNC), from this repository:
 #   gitops/charts/agripulse-service           the one chart all services use
 #   gitops/services/<service>/values.yaml     what the service is (secrets, settings, Redis, alerts)
 #   gitops/services/<service>/<env>.yaml      the image of that environment (the pipelines write only this)
@@ -110,11 +111,15 @@ resource "helm_release" "argocd_apps" {
         }
       }
       destination = { server = "https://kubernetes.default.svc", namespace = k }
-      syncPolicy = {
-        automated   = { prune = true, selfHeal = true }
-        syncOptions = ["CreateNamespace=false"]
-        retry       = { limit = 5, backoff = { duration = "10s", factor = 2, maxDuration = "3m" } }
-      }
+      # Continuous delivery: staging syncs every commit by itself; production waits for a person to press SYNC in
+      # Argo CD after promote.yml committed the images (it shows OutOfSync and the diff until then)
+      syncPolicy = merge(
+        {
+          syncOptions = ["CreateNamespace=false"]
+          retry       = { limit = 5, backoff = { duration = "10s", factor = 2, maxDuration = "3m" } }
+        },
+        d.environment == "production" ? {} : { automated = { prune = true, selfHeal = true } },
+      )
     } }
   })]
 

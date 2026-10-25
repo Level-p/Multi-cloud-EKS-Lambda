@@ -1,13 +1,14 @@
 # ---------------------------------------------------------------------------
-# Promote to production: the image each service runs in STAGING goes to PRODUCTION (GitOps)
+# AgriPulse: promote what runs in staging to production (GitOps, continuous delivery)
 #
-# Run it by hand (Actions > promote > Run workflow), pick one service or "all":
-#   plan       reads gitops/services/<service>/staging.yaml: the image (tag@digest) staging runs. Services never built
-#              (placeholder "initial") or already in production are skipped
-#   promote    waits for approval (environment agripulse-production), ONE commit of those images to the services'
-#              production.yaml, Argo CD syncs <service>-production; the canary analysis (Prometheus) decides
-#   dast       OWASP ZAP baseline (passive) of each promoted service's public URL
-# The SAME signed image staging ran: nothing is rebuilt. Roll back: git revert the promotion commit and push.
+# Run it by hand (Actions > promote > Run workflow), pick one service or "all".
+#   1. waits for approval: the environment agripulse-production has required reviewers
+#   2. copies the image (tag + digest) from gitops/services/<service>/staging.yaml into production.yaml,
+#      commits and pushes. Services never built (placeholder "initial") or already in production are skipped
+#   3. Argo CD then shows <service>-production as OutOfSync: a person reviews the diff and clicks SYNC
+#      (production never syncs by itself; staging does)
+#
+# The SAME signed image staging ran: nothing is rebuilt. Roll back: git revert the promotion commit, push, SYNC.
 # ---------------------------------------------------------------------------
 name: promote
 
@@ -21,119 +22,66 @@ on:
         default: all
 
 permissions:
-  contents: write   # the production commit
-  id-token: write   # OIDC token for AWS
-  actions: read     # the AI diagnosis reads the failed jobs' logs
-  checks: read
+  contents: write   # push the production.yaml commit
 
 concurrency:
   group: promote
   cancel-in-progress: false
 
-env:
-  AWS_REGION: eu-west-2
-
 jobs:
-  plan:
+  promote:
+    name: Copy staging images to production
     runs-on: ubuntu-latest
-    outputs:
-      images: ${{ steps.plan.outputs.images }}
-      services: ${{ steps.plan.outputs.services }}
+    environment:
+      name: agripulse-production   # required reviewers: Settings > Environments
+      url: https://argocd.mfon21.space
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: main
-      - name: What staging runs, and what production does not yet
-        id: plan
+
+      - name: Copy the images
         env:
           CHOICE: ${{ inputs.service }}
         run: |
           set -euo pipefail
           sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/download/v4.54.1/yq_linux_amd64 && sudo chmod +x /usr/local/bin/yq
           if [ "$CHOICE" = "all" ]; then services="accounts farm shop incidents"; else services="$CHOICE"; fi
-          items="[]"
-          echo "### Promotion plan" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Promotion" >> "$GITHUB_STEP_SUMMARY"
           for s in $services; do
-            tag=$(yq '.image.tag' "gitops/services/$s/staging.yaml")
-            digest=$(yq '.image.digest // ""' "gitops/services/$s/staging.yaml")
-            prod=$(yq '.image.tag' "gitops/services/$s/production.yaml")
-            if [ "$tag" = "initial" ] || [ -z "$digest" ]; then
+            STAGE="gitops/services/$s/staging.yaml"; PROD="gitops/services/$s/production.yaml"
+            TAG=$(yq '.image.tag' "$STAGE"); DIGEST=$(yq '.image.digest // ""' "$STAGE")
+            if [ "$TAG" = "initial" ] || [ -z "$DIGEST" ]; then
               echo "- $s: skipped, never built (run the app workflow first)" >> "$GITHUB_STEP_SUMMARY"; continue
             fi
-            if [ "$tag" = "$prod" ]; then
-              echo "- $s: production already runs $tag" >> "$GITHUB_STEP_SUMMARY"; continue
+            if [ "$(yq '.image.tag' "$PROD")" = "$TAG" ]; then
+              echo "- $s: production already has $TAG" >> "$GITHUB_STEP_SUMMARY"; continue
             fi
-            echo "- $s: $prod -> **$tag**" >> "$GITHUB_STEP_SUMMARY"
-            items=$(jq -c --arg s "$s" --arg t "$tag" --arg d "$digest" '. + [{service: $s, tag: $t, digest: $d}]' <<< "$items")
+            TAG="$TAG" DIGEST="$DIGEST" yq -i '.image.tag = strenv(TAG) | .image.digest = strenv(DIGEST)' "$PROD"
+            echo "- $s: **$TAG**" >> "$GITHUB_STEP_SUMMARY"
           done
-          echo "images=$items" >> "$GITHUB_OUTPUT"
-          echo "services=$(jq -c '[.[].service]' <<< "$items")" >> "$GITHUB_OUTPUT"
-          [ "$items" != "[]" ] || echo "Nothing to promote." >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo "### Changes for production"
+            echo '```diff'
+            git diff -- gitops/services/
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
-  promote:
-    needs: plan
-    if: needs.plan.outputs.images != '[]'
-    runs-on: ubuntu-latest
-    timeout-minutes: 40
-    environment: agripulse-production   # required reviewers: Settings > Environments
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: main
-      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
-        with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-          aws-region: ${{ env.AWS_REGION }}
-      - uses: ./.github/actions/infra-outputs
-        with:
-          stack: aws
-      - uses: ./.github/actions/gitops-deploy
-        with:
-          environment: production
-          images: ${{ needs.plan.outputs.images }}   # the images staging runs, not rebuilds
-
-  dast:
-    name: dast ${{ matrix.service }} (OWASP ZAP baseline)
-    needs: [plan, promote]
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      matrix:
-        service: ${{ fromJSON(needs.plan.outputs.services) }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
-        with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-          aws-region: ${{ env.AWS_REGION }}
-      - uses: ./.github/actions/infra-outputs
-        with:
-          stack: aws
-      - name: The service's public URL (output <service>_url)
-        env:
-          SERVICE: ${{ matrix.service }}
+      - name: Commit and push
         run: |
-          VAR="TF_OUT_${SERVICE^^}_URL"
-          echo "TARGET_URL=${!VAR}" >> "$GITHUB_ENV"
-      - uses: ./.github/actions/dast-zap
-        with:
-          app: ${{ matrix.service }}
-          mode: production
-          target-url: ${{ env.TARGET_URL }}
-          blocking: ${{ vars.SECURITY_GATES == 'enforce' }}   # report only unless the repository variable says enforce
-
-  diagnose:
-    needs: [plan, promote, dast]
-    if: failure()
-    runs-on: ubuntu-latest
-    permissions:
-      actions: read
-      checks: read
-      contents: read
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: ./.github/actions/ai-diagnosis
-        with:
-          anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
-          slack-webhook-url: ${{ secrets.SLACK_WEBHOOK_URL }}
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add gitops/services/*/production.yaml
+          if git diff --cached --quiet; then
+            echo "Production already has the staging versions." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          NAMES=$(git diff --cached --name-only | cut -d/ -f3 | paste -sd, -)
+          git commit -m "ci: promote $NAMES from staging to production (run $GITHUB_RUN_NUMBER) [skip ci]"
+          for attempt in 1 2 3 4 5; do
+            git pull --rebase origin main && git push origin HEAD:main && break
+            [ "$attempt" = 5 ] && { echo "::error::Could not push the promotion"; exit 1; }
+            sleep $((attempt * 5))
+          done
+          echo "Production values updated. Open Argo CD (https://argocd.mfon21.space), review each **<service>-production** (APP DIFF) and click **SYNC**." >> "$GITHUB_STEP_SUMMARY"
