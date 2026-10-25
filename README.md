@@ -60,9 +60,10 @@ needed only there, never in Terraform or the cluster.
 ## Deploy (summary)
 
 1. `cd infra && ./bootstrap.sh`: state bucket + the GitHub OIDC role; add the printed `AWS_ROLE_ARN` as a repository secret.
-2. Add the secrets `SLACK_WEBHOOK_URL` (required) and `ANTHROPIC_API_KEY`, and the variable `CLUSTER_ADMIN_ARNS` =
-   `["arn:aws:iam::<account>:user/<you>"]` (then `aws eks update-kubeconfig --name agripulse-eks --region eu-west-2`
-   just works). Scans report only until the variable `SECURITY_GATES` = `enforce`. Create the environments
+2. Add the secrets `SLACK_WEBHOOK_URL` (required) and `ANTHROPIC_API_KEY`. kubectl admin is `user/levelp` by
+   default (`cluster_admin_arns` in `infra/aws/variables.tf`; the optional variable `CLUSTER_ADMIN_ARNS`, a JSON list,
+   replaces it), so `aws eks update-kubeconfig --name agripulse-eks --region eu-west-2` just works.
+   Scans report only until the variable `SECURITY_GATES` = `enforce`. Create the environments
    `agripulse-infrastructure` and `agripulse-production` with yourself as reviewer.
 3. Run **infra-aws**, then **platform**, then **accounts**, **farm**, **shop**, **incidents**, **mobile-backend**.
 4. Register at `https://accounts.mfon21.space/register`; grant yourself the ops role for the incident blog:

@@ -38,9 +38,9 @@ variable "node_desired" {
 }
 
 variable "cluster_admin_arns" {
-  description = "Extra IAM users/roles with cluster admin, e.g. [\"arn:aws:iam::<account>:user/<you>\"] for kubectl (GitHub variable CLUSTER_ADMIN_ARNS)"
+  description = "IAM users/roles with cluster admin for kubectl (aws eks update-kubeconfig). The GitHub variable CLUSTER_ADMIN_ARNS, a JSON list, replaces this default when set."
   type        = list(string)
-  default     = []
+  default     = ["arn:aws:iam::127214197057:user/levelp"]
 
   # An SSO session (arn:aws:sts::...:assumed-role/<role>/<session>) changes every sign-in: give the role instead
   validation {
