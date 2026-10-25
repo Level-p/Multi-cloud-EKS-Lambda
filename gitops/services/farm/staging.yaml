@@ -1,6 +1,6 @@
 # Written by the pipeline on every merge to main: the image built, scanned and signed for this commit
 image:
-  tag: r3-afeff0114328b146651b722c09ed178723389627
-  digest: "sha256:082ec3a5007c76ed39a7893182f26aa1392adcc9cdc4b323ebd5d852154220ad"
+  tag: r5-dfb6080e7a555f8cde046d8362e7220954b7d23a
+  digest: "sha256:e91561ba18632c864b5eabd81dafdafc5be91e8a661d1753d4f073f28384b396"
 replicas: 1
 rollout: {pause: 1m}
