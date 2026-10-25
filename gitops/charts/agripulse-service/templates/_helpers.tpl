@@ -27,7 +27,7 @@ capabilities: { drop: ["ALL"] }
      could never succeed (and would block the first real commit while it retries). */}}
 {{- define "svc.image" -}}
 {{- if and .Values.requireBuiltImage (eq (toString .Values.image.tag) "initial") -}}
-{{- fail (printf "No %s image has been built yet (image.tag is the placeholder 'initial'): run the %s pipeline; Argo CD deploys as soon as it commits the tag" .Values.service .Values.service) -}}
+{{- fail (printf "No %s image has been built yet (image.tag is the placeholder 'initial'): run the app workflow (service %s or all); Argo CD deploys as soon as it commits the tag" .Values.service .Values.service) -}}
 {{- end -}}
 {{ .Values.image.registry }}/{{ .Values.image.repository }}:{{ .Values.image.tag }}{{ with .Values.image.digest }}@{{ . }}{{ end }}
 {{- end }}

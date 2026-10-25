@@ -110,6 +110,9 @@ jobs:
     runs-on: ubuntu-latest
     environment: agripulse-infrastructure
     timeout-minutes: 120
+    permissions:
+      contents: write   # the image reset commit below
+      id-token: write
     concurrency:
       group: infra-aws
       cancel-in-progress: false
@@ -140,3 +143,24 @@ jobs:
             echo "- Kept: the Terraform state bucket, the GitHub Actions IAM role and the Route 53 zone"
             echo "- The KMS keys are pending deletion for 7 days (no cost while pending)"
           } >> "$GITHUB_STEP_SUMMARY"
+
+      # ECR and every image in it are gone: Git must not keep pointing at them. Otherwise the next environment's
+      # Argo CD deploys those missing images first, Argo Rollouts takes that never-running version as "stable", and
+      # every later canary waits forever for it. Back to the placeholder, the chart then shows "No <service> image
+      # has been built yet" until each pipeline runs.
+      - name: Reset the GitOps image references to the placeholder
+        run: |
+          set -euo pipefail
+          sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/download/v4.54.1/yq_linux_amd64 && sudo chmod +x /usr/local/bin/yq
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          for attempt in 1 2 3; do
+            git pull --ff-only origin main
+            for f in gitops/services/*/staging.yaml gitops/services/*/production.yaml; do
+              yq -i '.image.tag = "initial" | del(.image.digest)' "$f"
+            done
+            git commit -am "ci: images deleted with the environment, back to the placeholder [skip ci]" || { echo "already reset"; exit 0; }
+            git push origin HEAD:main && { echo "- GitOps image references reset to the placeholder" >> "$GITHUB_STEP_SUMMARY"; exit 0; }
+            git reset --hard origin/main
+          done
+          echo "::error::Could not push the image reset"; exit 1

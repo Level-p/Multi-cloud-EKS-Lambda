@@ -1,0 +1,261 @@
+# ---------------------------------------------------------------------------
+# AgriPulse microservices (app/accounts, app/farm, app/shop, app/incidents): CI + GitOps deploy to STAGING
+#
+#   changes         which services changed in this push or PR (app/<service>/, gitops/services/<service>/values.yaml).
+#                   A change to what they share (app/common, app/Dockerfile, app/dast, the chart, this workflow, the
+#                   actions) means all four. A manual run builds the service you pick, or all.
+#   build           ONLY the changed services, in parallel, one job each (matrix):
+#                   pytest (hash-verified dependencies) -> Gitleaks, Semgrep, pip-audit, Checkov (the chart as Argo CD
+#                   renders it) -> OWASP ZAP full scan of the service on the runner -> docker build -> Trivy
+#                   -> push to ECR -> SBOM (Syft) -> Cosign signature + SBOM attestation with the AWS KMS key
+#                   (push, SBOM and signing on main only; scans report only unless SECURITY_GATES is "enforce")
+#   deploy-staging  ONE commit with the new tag@digest of every service that built and was signed, to
+#                   gitops/services/<service>/staging.yaml; Argo CD syncs <service>-staging; the canary analysis
+#                   decides. A service that failed to build is left out, the others still deploy.
+#   diagnose        (only on failure) AI explanation of what broke (Claude)
+#
+# Pull requests test, scan and build the changed services but push and deploy nothing.
+# Production: run the "promote" workflow (the image staging runs, after approval).
+# ---------------------------------------------------------------------------
+name: app
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "app/**"
+      - "!app/mobile-backend/**"                   # its own workflow: mobile-backend.yml
+      - "gitops/charts/agripulse-service/**"
+      - "gitops/services/*/values.yaml"            # staging.yaml / production.yaml are written by the pipelines
+      - ".github/workflows/app.yml"
+      - ".github/actions/**"
+  pull_request:
+    branches: [main]
+    paths: ["app/**", "!app/mobile-backend/**", "gitops/charts/agripulse-service/**", "gitops/services/*/values.yaml",
+            ".github/workflows/app.yml", ".github/actions/**"]
+  workflow_dispatch:
+    inputs:
+      service:
+        description: Which service to build and deploy to staging
+        type: choice
+        options: [all, accounts, farm, shop, incidents]
+        default: all
+
+permissions:
+  contents: read
+  id-token: write   # OIDC token for AWS
+
+concurrency:
+  group: app-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: eu-west-2
+  TAG: r${{ github.run_number }}-${{ github.sha }}
+
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      services: ${{ steps.pick.outputs.services }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Services to build
+        id: pick
+        env:
+          EVENT: ${{ github.event_name }}
+          CHOICE: ${{ inputs.service }}
+          BEFORE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          set -euo pipefail
+          ALL="accounts farm shop incidents"
+          if [ "$EVENT" = "workflow_dispatch" ]; then
+            if [ "$CHOICE" = "all" ]; then picked="$ALL"; else picked="$CHOICE"; fi
+          elif [ -z "$BEFORE" ] || ! git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
+            picked="$ALL"   # first push of a branch, or history rewritten: build everything
+          else
+            changed=$(git diff --name-only "$BEFORE" "$GITHUB_SHA")
+            if grep -qE '^(app/common/|app/Dockerfile|app/dast/|gitops/charts/agripulse-service/|\.github/workflows/app\.yml|\.github/actions/)' <<< "$changed"; then
+              picked="$ALL"   # something they all share
+            else
+              picked=""
+              for s in $ALL; do
+                grep -qE "^(app/$s/|gitops/services/$s/values\.yaml)" <<< "$changed" && picked="$picked $s"
+              done
+            fi
+          fi
+          services=$(jq -cn --arg p "$picked" '$p | split(" ") | map(select(length > 0))')
+          echo "services=$services" >> "$GITHUB_OUTPUT"
+          echo "### Services to build" >> "$GITHUB_STEP_SUMMARY"
+          jq -r 'if length == 0 then "none (no service changed)" else .[] | "- " + . end' <<< "$services" >> "$GITHUB_STEP_SUMMARY"
+
+  build:
+    name: build ${{ matrix.service }}
+    needs: changes
+    if: needs.changes.outputs.services != '[]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false        # one broken service does not cancel the others
+      matrix:
+        service: ${{ fromJSON(needs.changes.outputs.services) }}
+    env:
+      SERVICE: ${{ matrix.service }}
+      PUSH: ${{ github.ref == 'refs/heads/main' && github.event_name != 'pull_request' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0      # Gitleaks scans the history
+
+      - uses: ./.github/actions/python-tests
+        with:
+          app-path: app/${{ matrix.service }}
+          python-path: ../common
+          artifact-name: ${{ matrix.service }}
+
+      # Checkov scans what Argo CD will apply: the chart rendered with this service's values, in both environments
+      - name: Render the chart (staging, production)
+        run: |
+          set -euo pipefail
+          mkdir -p rendered
+          for e in staging production; do
+            helm template "$SERVICE" gitops/charts/agripulse-service -n "$SERVICE-$e" --set environment="$e" \
+              -f "gitops/services/$SERVICE/values.yaml" -f "gitops/services/$SERVICE/$e.yaml" -f .github/ci/chart-values.yaml \
+              > "rendered/$SERVICE-$e.yaml"
+          done
+
+      - uses: ./.github/actions/security-scans
+        with:
+          app-path: app/${{ matrix.service }}
+          iac-paths: rendered
+          blocking: ${{ vars.SECURITY_GATES == 'enforce' }}   # report only unless the repository variable says enforce
+
+      - uses: ./.github/actions/dast-zap
+        with:
+          app: ${{ matrix.service }}
+          mode: ephemeral
+          blocking: ${{ vars.SECURITY_GATES == 'enforce' }}
+
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        if: env.PUSH == 'true'
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: ./.github/actions/infra-outputs
+        if: env.PUSH == 'true'
+        with:
+          stack: aws
+
+      - name: docker build
+        run: |
+          IMAGE="${TF_OUT_ECR_REGISTRY:-local}/agripulse/$SERVICE:$TAG"
+          echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
+          docker build -f app/Dockerfile --build-arg SERVICE="$SERVICE" -t "$IMAGE" app
+
+      # HIGH is always report only; fixable CRITICAL fails the run only when SECURITY_GATES = enforce
+      - name: Trivy (image vulnerabilities)
+        env:
+          GATE: ${{ vars.SECURITY_GATES == 'enforce' && '1' || '0' }}
+        run: |
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:0.76.0 image \
+            --severity HIGH --ignore-unfixed --exit-code 0 --no-progress "$IMAGE"
+          if ! docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:0.76.0 image \
+            --severity CRITICAL --ignore-unfixed --exit-code 1 --no-progress "$IMAGE"; then
+            if [ "$GATE" = "1" ]; then exit 1; fi
+            echo "::warning title=Trivy (report only)::fixable CRITICAL vulnerabilities in the $SERVICE image (see above); not failing the run while SECURITY_GATES is not 'enforce'"
+            echo "- Trivy ($SERVICE): fixable CRITICAL vulnerabilities (report only)" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Push, SBOM, sign, attest
+        if: env.PUSH == 'true'
+        run: |
+          set -euo pipefail
+          aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$TF_OUT_ECR_REGISTRY"
+          docker push "$IMAGE"
+          DIGEST_REF="${IMAGE%:*}@$(docker inspect --format '{{index .RepoDigests 0}}' "$IMAGE" | cut -d@ -f2)"
+
+          curl -sSfL https://raw.githubusercontent.com/anchore/syft/v1.54.1/install.sh | sudo sh -s -- -b /usr/local/bin v1.54.1
+          syft "$DIGEST_REF" -o cyclonedx-json=sbom.cdx.json
+
+          sudo curl -sSfLo /usr/local/bin/cosign https://github.com/sigstore/cosign/releases/download/v2.6.5/cosign-linux-amd64   # v2 line: stable key-based flags
+          sudo chmod +x /usr/local/bin/cosign
+          # The private key never leaves AWS KMS: cosign asks KMS to sign the digest (AWS credentials from OIDC)
+          KEY="$TF_OUT_COSIGN_KEY_URI"
+          cosign sign --yes --tlog-upload=false --key "$KEY" "$DIGEST_REF"
+          cosign attest --yes --tlog-upload=false --key "$KEY" --type cyclonedx --predicate sbom.cdx.json "$DIGEST_REF"
+          cosign verify --insecure-ignore-tlog --key "$KEY" "$DIGEST_REF" > /dev/null
+          echo "- $SERVICE: signed and attested $DIGEST_REF" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: env.PUSH == 'true'
+        with:
+          name: sbom-${{ matrix.service }}
+          path: sbom.cdx.json
+
+  deploy-staging:
+    needs: [changes, build]
+    # Also when some builds failed: the services that built and were signed still deploy
+    if: >-
+      !cancelled() && github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+      && needs.changes.outputs.services != '[]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    permissions:
+      contents: write   # the GITHUB_TOKEN pushes the GitOps commit
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - uses: ./.github/actions/infra-outputs
+        with:
+          stack: aws
+
+      # The images of this run that are in ECR AND carry their Cosign signature (Kyverno admits nothing else)
+      - name: Images built and signed in this run
+        id: images
+        env:
+          SERVICES: ${{ needs.changes.outputs.services }}
+        run: |
+          set -euo pipefail
+          images="[]"
+          for s in $(jq -r '.[]' <<< "$SERVICES"); do
+            digest=$(aws ecr describe-images --repository-name "agripulse/$s" --image-ids imageTag="$TAG" \
+              --query 'imageDetails[0].imageDigest' --output text 2>/dev/null || true)
+            if [ -z "$digest" ] || [ "$digest" = "None" ]; then
+              echo "::warning::$s: no image $TAG in ECR (its build failed): not deployed"; continue
+            fi
+            if ! aws ecr describe-images --repository-name "agripulse/$s" --image-ids imageTag="${digest/:/-}.sig" >/dev/null 2>&1; then
+              echo "::warning::$s: image $TAG is not signed (its build failed after the push): not deployed"; continue
+            fi
+            images=$(jq -c --arg s "$s" --arg t "$TAG" --arg d "$digest" '. + [{service: $s, tag: $t, digest: $d}]' <<< "$images")
+          done
+          echo "images=$images" >> "$GITHUB_OUTPUT"
+          [ "$images" != "[]" ] || { echo "::error::No service built successfully: nothing to deploy"; exit 1; }
+
+      - uses: ./.github/actions/gitops-deploy
+        with:
+          environment: staging
+          images: ${{ steps.images.outputs.images }}
+
+  diagnose:
+    needs: [changes, build, deploy-staging]
+    if: failure()
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      checks: read
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/ai-diagnosis
+        with:
+          anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+          slack-webhook-url: ${{ secrets.SLACK_WEBHOOK_URL }}

@@ -13,8 +13,12 @@ the mobile app. The operations team records incidents, and every incident is rep
 | **mobile API** | The mobile app's gateway to accounts, farm and shop | API Gateway + Lambda | `app/mobile-backend` |
 
 Every microservice runs in **staging and production**, each in its own namespace (`shop-staging`, `shop-production`...)
-with its own database, all deployed by **Argo CD** from `gitops/`. A merge goes to staging automatically; production
-gets the same signed image after approval, each release as a canary that Prometheus judges.
+with its own database, all deployed by **Argo CD** from `gitops/`. Each release is a canary that Prometheus judges.
+
+| To | Run | What happens |
+|---|---|---|
+| **staging** | **app** (pick a service or `all`), or just merge to `main`: only the services that changed are built | test, scan, build, sign -> commit to `gitops/services/<service>/staging.yaml` -> Argo CD syncs `<service>-staging` |
+| **production** | **promote** (pick a service or `all`), then approve | the image staging runs -> commit to `production.yaml` -> Argo CD syncs `<service>-production` |
 
 | | |
 |---|---|
@@ -65,7 +69,7 @@ needed only there, never in Terraform or the cluster.
    replaces it), so `aws eks update-kubeconfig --name agripulse-eks --region eu-west-2` just works.
    Scans report only until the variable `SECURITY_GATES` = `enforce`. Create the environments
    `agripulse-infrastructure` and `agripulse-production` with yourself as reviewer.
-3. Run **infra-aws**, then **platform**, then **accounts**, **farm**, **shop**, **incidents**, **mobile-backend**.
+3. Run **infra-aws**, then **platform**, then **app** (`all`: staging), **promote** (`all`: production), **mobile-backend**.
 4. Register at `https://accounts.mfon21.space/register`; grant yourself the ops role for the incident blog:
    `kubectl -n accounts-production exec <accounts pod> -- python -m app.admin grant-ops you@example.com`.
 
@@ -89,7 +93,7 @@ infra/
 gitops/
   charts/agripulse-service/          the one Helm chart every service uses
   services/<service>/                values.yaml (what the service is), staging.yaml, production.yaml (its image there)
-.github/             workflows (infra-aws, platform, accounts, farm, shop, incidents, mobile-backend, destroy),
+.github/             workflows (infra-aws, platform, app, promote, mobile-backend, destroy),
                      actions, the Terraform preflight and AI diagnosis scripts, Dependabot
 architecture/        diagrams: draw.io sources + PNG exports
 docs/                the guides and the error report (Word)
