@@ -106,12 +106,22 @@ def test_markdown_is_sanitised(client):
     assert "script-src 'none'" in client.get("/").headers["content-security-policy"]
 
 
-def test_only_ops_accounts_and_forms_need_the_token(client):
+def test_anyone_reads_only_ops_writes_and_forms_need_the_token(client):
+    iid = declare(client)
     anonymous = TestClient(blog.app)
-    assert anonymous.get("/", follow_redirects=False).headers["location"].startswith("http://accounts.test/login?next=")
+    for path in ("/", f"/incidents/{iid}"):
+        page = anonymous.get(path)
+        assert page.status_code == 200 and "Mobile uploads failing" in page.text
+        assert "operations team" in page.text and "@" not in page.text.split("<footer")[0].split("</header>")[-1]
+        assert 'action="/incidents' not in page.text            # no forms for the public
+    assert anonymous.post("/incidents", data={"csrf": "x", "title": "Something broke", "severity": "SEV3"},
+                          follow_redirects=False).headers["location"].startswith("http://accounts.test/login?next=")
     buyer = TestClient(blog.app)
     buyer.cookies.set("agripulse_session", token("buyer"))
-    assert buyer.get("/").status_code == 403
+    assert buyer.get("/").status_code == 200 and 'action="/incidents"' not in buyer.get("/").text
+    assert buyer.post("/incidents", data={"csrf": "x", "title": "Something broke", "severity": "SEV3"}).status_code == 403
+    assert buyer.post(f"/incidents/{iid}/posts", data={"csrf": "x", "body": "hi"}).status_code == 403
+    assert 'action="/incidents"' in client.get("/").text            # ops see the forms
     r = client.post("/incidents", data={"csrf": "bad", "title": "Something broke", "severity": "SEV3"})
     assert r.status_code == 403
 

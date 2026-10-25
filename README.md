@@ -9,7 +9,7 @@ the mobile app. The operations team records incidents, and every incident is rep
 | **accounts** | Sign-up and sign-in for farmers and buyers; signs the tokens every service checks | EKS | `app/accounts` |
 | **farm** | Farmer profiles, listings, farm records, listing photos; stock reservations for the shop | EKS | `app/farm` |
 | **shop** | Catalog, carts (Redis), orders: one per farm, pay on delivery | EKS (+ Valkey) | `app/shop` |
-| **incidents** | The operations team's incident blog; every incident reported to Slack | EKS | `app/incidents` |
+| **incidents** | The incident blog: public to read, the operations team writes it; every incident reported to Slack | EKS | `app/incidents` |
 | **mobile API** | The mobile app's gateway to accounts, farm and shop | API Gateway + Lambda | `app/mobile-backend` |
 
 Every microservice runs in **staging and production**, each in its own namespace (`shop-staging`, `shop-production`...)
@@ -46,7 +46,7 @@ with its own database, all deployed by **Argo CD** from `gitops/`. Each release 
 | `https://shop.mfon21.space` | the shop (buyers; farmers buying farm resources) |
 | `https://farm.mfon21.space` | the farmer portal |
 | `https://accounts.mfon21.space` | register, sign in (one account for web and mobile) |
-| `https://incidents.mfon21.space` | the incident blog (ops accounts) |
+| `https://incidents.mfon21.space` | the incident blog: anyone can read it; ops accounts declare and update incidents |
 | `https://api.mfon21.space` | the mobile API |
 | `https://media.mfon21.space` | listing photos (only uploads GuardDuty marked clean) |
 | `https://argocd.mfon21.space`, `https://grafana.mfon21.space` | Argo CD and Grafana (their own admin sign-in) |
@@ -70,7 +70,7 @@ needed only there, never in Terraform or the cluster.
    Scans report only until the variable `SECURITY_GATES` = `enforce`. Create the environments
    `agripulse-infrastructure` and `agripulse-production` with yourself as reviewer.
 3. Run **infra-aws**, then **platform**, then **app** (`all`: staging), **promote** (`all`: production), **mobile-backend**.
-4. Register at `https://accounts.mfon21.space/register`; grant yourself the ops role for the incident blog:
+4. Register at `https://accounts.mfon21.space/register`; grant yourself the ops role to declare and update incidents:
    `kubectl -n accounts-production exec <accounts pod> -- python -m app.admin grant-ops you@example.com`.
 
 Details, checks and costs: [docs/AgriPulse-AWS-Deployment-Guide.docx](docs/AgriPulse-AWS-Deployment-Guide.docx).

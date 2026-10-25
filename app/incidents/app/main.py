@@ -1,14 +1,16 @@
 """AgriPulse incidents: the operations team's record of every incident, and its report to Slack.
 
-  GET  /                              all incidents, KPIs (open count, MTTA, MTTR)
+  GET  /                              all incidents, KPIs (open count, MTTA, MTTR)                  (public)
   POST /incidents                     declare an incident (form, CSRF)            -> Slack report
-  GET  /incidents/{id}                the incident and its timeline (blog posts)
+  GET  /incidents/{id}                the incident and its timeline (blog posts)                    (public)
   POST /incidents/{id}/transition     move to the next lifecycle state with a note -> Slack report when closed
   POST /incidents/{id}/posts          add an update to the timeline without changing state
   POST /webhooks/alertmanager         Alertmanager opens SEV2/SEV3 incidents automatically (Bearer token) -> Slack report
   GET  /healthz /readyz /metrics
 
-Who: AgriPulse accounts with the "ops" role (granted by an operator in the accounts service). Everybody else gets 403.
+Who: anyone may READ the incidents (a public status page); the people who handle them are shown as "operations team".
+Declaring, moving and updating an incident needs an AgriPulse account with the "ops" role (granted by an operator in
+the accounts service): ops accounts also see the forms and who did what. Everybody else gets 403 on those.
 Notes are Markdown, rendered to HTML and then sanitised with an allow-list (no scripts, no event handlers, safe links
 only), so a pasted log line cannot inject script into the page.
 """
@@ -54,6 +56,10 @@ def sessions():
 app, templates = web.create_app("incidents", Path(__file__).parent, readiness=lambda: ping(sessions),
                                 on_metrics=lambda: refresh_gauges(), loggers=("agripulse", "uvicorn.error"))
 ops = auth.requires("ops", html=True)
+
+
+def is_ops(me: auth.Principal | None) -> bool:
+    return me is not None and me.role == "ops"
 
 
 def utcnow():
@@ -119,10 +125,11 @@ def refresh_gauges():
 
 # ---------------- pages ----------------
 @app.get("/")
-def index(request: Request, me: auth.Principal = Depends(ops)):
+def index(request: Request, me: auth.Principal | None = Depends(auth.optional)):
     with sessions()() as db:
         incidents = db.scalars(select(Incident).order_by(Incident.detected_at.desc())).all()
-    return web.page(templates, request, "index.html", {"me": me, "incidents": incidents, "kpi": kpis(incidents)})
+    return web.page(templates, request, "index.html", {"me": me, "is_ops": is_ops(me), "incidents": incidents,
+                                                       "kpi": kpis(incidents), "login": auth.login_url(request)})
 
 
 @app.post("/incidents")
@@ -139,13 +146,13 @@ def declare(request: Request, me: auth.Principal = Depends(ops), csrf: str = For
 
 
 @app.get("/incidents/{incident_id}")
-def incident_page(request: Request, incident_id: int, me: auth.Principal = Depends(ops)):
+def incident_page(request: Request, incident_id: int, me: auth.Principal | None = Depends(auth.optional)):
     with sessions()() as db:
         inc = db.get(Incident, incident_id)
         if not inc:
             raise HTTPException(status_code=404, detail="incident not found")
         posts = db.scalars(select(Post).where(Post.incident_id == incident_id).order_by(Post.at, Post.id)).all()
-    return web.page(templates, request, "incident.html", {"me": me, "inc": inc, "posts": posts,
+    return web.page(templates, request, "incident.html", {"me": me, "is_ops": is_ops(me), "inc": inc, "posts": posts,
                                                          "next_states": sorted(ALLOWED[inc.state], key=STATES.index)})
 
 

@@ -4,17 +4,17 @@
 <p><a href="/">← All incidents</a></p>
 <h1>#{{ inc.id }} {{ inc.title }}</h1>
 <p><span class="sev-{{ inc.severity }}">{{ inc.severity }}</span> · <span class="state {{ inc.state }}">{{ LABELS[inc.state] }}</span>
-   · commander {{ inc.commander }} · services: {{ inc.services or "–" }}</p>
+   · commander {{ inc.commander if is_ops else "operations team" }} · services: {{ inc.services or "–" }}</p>
 <h2>Timeline</h2>
 {% for p in posts %}
   <article class="post">
-    <div class="meta">{{ p.at.strftime("%Y-%m-%d %H:%M") }} · {{ p.author }}
+    <div class="meta">{{ p.at.strftime("%Y-%m-%d %H:%M") }} · {{ p.author if is_ops else "operations team" }}
       {% if p.state_to %} · <strong>{{ LABELS[p.state_from] ~ " → " if p.state_from else "" }}{{ LABELS[p.state_to] }}</strong>{% endif %}</div>
     {{ p.body | markdown }}
   </article>
 {% endfor %}
 {% if inc.review %}<h2>Post-incident review</h2><article class="post">{{ inc.review | markdown }}</article>{% endif %}
-{% if next_states %}
+{% if is_ops and next_states %}
 <h2>Move to the next phase</h2>
 <form method="post" action="/incidents/{{ inc.id }}/transition" class="stack">
   <input type="hidden" name="csrf" value="{{ csrf_token(request) }}">
@@ -26,10 +26,12 @@
   <button type="submit">Record transition</button>
 </form>
 {% endif %}
+{% if is_ops %}
 <h2>Add an update</h2>
 <form method="post" action="/incidents/{{ inc.id }}/posts" class="stack">
   <input type="hidden" name="csrf" value="{{ csrf_token(request) }}">
   <textarea name="body" required placeholder="Status update (Markdown)"></textarea>
   <button type="submit">Post update</button>
 </form>
+{% endif %}
 {% endblock %}
