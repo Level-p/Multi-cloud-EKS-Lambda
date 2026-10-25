@@ -33,7 +33,7 @@ log "old version $OLD, new version $NEW"
 rollback() {
   log "ROLLBACK: $ALIAS stays on version $OLD ($1)"
   aws lambda update-alias --function-name "$FN" --name "$ALIAS" --function-version "$OLD" \
-    --routing-config 'AdditionalVersionWeights={}' >/dev/null
+    --routing-config '{"AdditionalVersionWeights":{}}' >/dev/null
   echo "::error::Lambda canary rolled back: $1"
   exit 1
 }
@@ -48,7 +48,7 @@ log "smoke test passed"
 if [ "$OLD" = "$NEW" ]; then log "nothing new to shift"; exit 0; fi
 
 aws lambda update-alias --function-name "$FN" --name "$ALIAS" --function-version "$OLD" \
-  --routing-config "AdditionalVersionWeights={\"$NEW\"=$CANARY_WEIGHT}" >/dev/null
+  --routing-config "{\"AdditionalVersionWeights\":{\"$NEW\":$CANARY_WEIGHT}}" >/dev/null   # JSON: the shorthand cannot quote a version number
 log "canary: $(awk "BEGIN{print $CANARY_WEIGHT*100}")% of live traffic -> version $NEW for $BAKE_MINUTES min"
 
 for i in $(seq 1 "$BAKE_MINUTES"); do
@@ -63,5 +63,5 @@ for i in $(seq 1 "$BAKE_MINUTES"); do
 done
 
 aws lambda update-alias --function-name "$FN" --name "$ALIAS" --function-version "$NEW" \
-  --routing-config 'AdditionalVersionWeights={}' >/dev/null
+  --routing-config '{"AdditionalVersionWeights":{}}' >/dev/null
 log "promoted: $ALIAS -> version $NEW (100%)"

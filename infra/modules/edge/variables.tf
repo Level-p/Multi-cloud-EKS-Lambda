@@ -7,14 +7,29 @@ variable "dns_zone_name" {
   type        = string
 }
 
-variable "subdomains" {
-  description = "Host name per endpoint under the zone"
-  type        = map(string)
+variable "alb_routes" {
+  description = <<-EOT
+    Hosts EKS serves through CloudFront "app" and the ALB: key => { host, port (container port of the pods),
+    health (path without sign-in), priority (of the ALB rule: fixed, because a changed priority replaces the rule) }.
+    One per service and environment (accounts, farm, shop, incidents x staging, production), plus Argo CD and Grafana.
+  EOT
+  type        = map(object({ host = string, port = number, health = string, priority = number }))
+}
 
-  validation {
-    condition     = alltrue([for k in ["web", "incidents", "media", "api", "argocd", "grafana"] : contains(keys(var.subdomains), k)])
-    error_message = "subdomains needs a value for web, incidents, media, api, argocd and grafana."
-  }
+variable "api_host" {
+  description = "The mobile API (CloudFront \"api\" -> API Gateway)"
+  type        = string
+}
+
+variable "media_host" {
+  description = "Static images (CloudFront \"media\" -> S3)"
+  type        = string
+}
+
+variable "mobile_gateway_secret" {
+  description = "X-Mobile-Gateway value the mobile API Lambda sends: its requests are exempt from the per-IP rate limit"
+  type        = string
+  sensitive   = true
 }
 
 variable "vpc_id" {
@@ -26,7 +41,7 @@ variable "public_subnet_ids" {
 }
 
 variable "cluster_security_group_id" {
-  description = "Security group of the EKS nodes and pods (the ALB reaches oauth2-proxy, Argo CD and Grafana pods in it)"
+  description = "Security group of the EKS nodes and pods (the ALB reaches the services, Argo CD and Grafana in it)"
   type        = string
 }
 

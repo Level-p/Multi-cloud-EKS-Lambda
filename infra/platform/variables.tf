@@ -26,12 +26,6 @@ variable "git_revision" {
   default = "main"
 }
 
-variable "price_admins" {
-  description = "E-mail addresses allowed to publish market prices in the web app"
-  type        = list(string)
-  default     = []
-}
-
 variable "enforce_image_signatures" {
   description = "true: Kyverno REJECTS pods in the app namespaces whose agripulse image has no valid Cosign signature. false: it only reports them (PolicyReports), e.g. while the first signed images are being built."
   type        = bool

@@ -1,0 +1,45 @@
+# The public way in: Terraform owns the ALB and the target group of this service and environment (infra/modules/edge);
+# this TargetGroupBinding asks the AWS Load Balancer Controller to keep the target group filled with the IPs of this
+# service's pods (target type ip: straight to the pods). CloudFront + AWS WAF are in front of the ALB.
+{{- $name := include "svc.name" . }}
+{{- if not .Values.aws.targetGroupArn }}
+{{- fail "aws.targetGroupArn is required (Terraform passes it through the Argo CD Application)" }}
+{{- end }}
+apiVersion: elbv2.k8s.aws/v1beta1
+kind: TargetGroupBinding
+metadata:
+  name: {{ $name }}
+  labels: {{- include "svc.labels" . | nindent 4 }}
+spec:
+  targetGroupARN: {{ .Values.aws.targetGroupArn | quote }}
+  targetType: ip
+  serviceRef: { name: {{ $name }}, port: 8080 }
+---
+# Zero trust inside the cluster: nothing reaches a pod in this namespace unless a policy below allows it
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+spec:
+  podSelector: {}
+  policyTypes: [Ingress]
+---
+# The service's pods: from the ALB (its addresses in the public subnets; it admits CloudFront only), from Prometheus,
+# and from the namespaces that call this service's internal API (e.g. the shop calling the farm service)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $name }}-ingress
+spec:
+  podSelector: { matchLabels: { app.kubernetes.io/name: {{ $name }} } }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        {{- range .Values.aws.albSourceCidrs }}
+        - ipBlock: { cidr: {{ . | quote }} }
+        {{- end }}
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: monitoring } }
+        {{- range .Values.internalCallers }}
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: {{ printf "%s-%s" . $.Values.environment | quote }} } }
+        {{- end }}
+      ports: [{ port: 8080, protocol: TCP }]

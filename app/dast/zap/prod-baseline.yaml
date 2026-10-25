@@ -1,12 +1,11 @@
 # OWASP ZAP Automation Framework plan: BASELINE (passive, unauthenticated) scan of a deployed
 # AgriPulse endpoint, after the deployment stage:
-#   web, incident-blog   https://agripulse|incidents.<zone>: AWS WAF -> CloudFront -> ALB -> EKS -> oauth2-proxy
-#   mobile-backend       https://api.<zone>: AWS WAF -> CloudFront -> API Gateway (Cognito authorizer) -> Lambda
-# Nothing is attacked and nothing is written. It proves what only the real edge can show: TLS and
-# HTTPS redirects, security headers after CloudFront, the sign-in redirect and its
-# cookies (oauth2-proxy), that protected routes answer 401/302 instead of data, CORS, error pages
-# and server banners. An authenticated production scan would need a dedicated test identity in
-# Cognito: see app/dast/README.md.
+#   the services     https://<service>.<zone>: AWS WAF -> CloudFront -> ALB -> EKS (accounts, farm, shop, incidents)
+#   mobile-backend   https://api.<zone>: AWS WAF -> CloudFront -> API Gateway -> the gateway Lambda
+# Nothing is attacked and nothing is written. It proves what only the real edge can show: TLS and HTTPS redirects,
+# security headers after CloudFront, the sign-in redirect and the session cookie's flags, that protected routes
+# answer 401/303 instead of data, CORS, error pages and server banners. An authenticated production scan would need
+# a dedicated test account and an exclusion of write operations: see app/dast/README.md.
 #
 # Inputs: TARGET_URL, APP, DAST_DIR
 env:

@@ -1,6 +1,6 @@
 # ---------------------------------------------------------------------------
 # AWS infrastructure (infra/aws, composed of infra/modules/*): VPC, EKS, RDS PostgreSQL (Multi-AZ), ECR + Cosign
-# KMS key, S3 + GuardDuty, Cognito, Secrets Manager, API Gateway + Lambda, ONE WAF on three CloudFront
+# KMS key, S3 + GuardDuty, Secrets Manager, API Gateway + Lambda, ONE WAF on three CloudFront
 # distributions, ALB, Route 53 / ACM, EventBridge -> Slack
 #   Pull request  -> security scans + terraform plan + preflight (values checked with AWS's APIs)
 #   Push to main  -> the same, then apply EXACTLY that plan after approval (environment agripulse-infrastructure)
@@ -148,7 +148,7 @@ jobs:
           {
             echo "### AWS infrastructure applied"
             echo "- EKS: \`$(terraform output -raw kubeconfig_command)\`"
-            echo "- Web app: $(terraform output -raw web_url) (serves once **platform** and **web** have run)"
+            echo "- Shop: $(terraform output -raw shop_url), farmers: $(terraform output -raw farm_url) (serve once **platform** and the service pipelines have run)"
             echo "- PostgreSQL: $(terraform output -raw db_endpoint) (Multi-AZ)"
             echo "- Mobile API: $(terraform output -raw mobile_api_url)"
             echo "- Next: run **platform**"

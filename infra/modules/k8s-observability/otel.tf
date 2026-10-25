@@ -65,7 +65,12 @@ locals {
           remote_write = [{ url = "${local.prometheus_url}/api/v1/write", send_exemplars = true }]
         }
       }
-      overrides = { defaults = { metrics_generator = { processors = ["service-graphs", "span-metrics"] } } }
+      # k8s.namespace.name (set by the collector's k8s_attributes) becomes a label: <service>-<environment>, so the
+      # alerts know staging from production
+      overrides = { defaults = { metrics_generator = {
+        processors = ["service-graphs", "span-metrics"]
+        processor  = { span_metrics = { dimensions = ["k8s.namespace.name"] } }
+      } } }
       resources = { requests = { cpu = "100m", memory = "256Mi" }, limits = { memory = "1Gi" } }
     }
     persistence    = { enabled = true, size = "10Gi" }
@@ -73,7 +78,7 @@ locals {
   }
 
   loki_values = {
-    deploymentMode = "Monolithic" # one pod with a disk: right for the volume of two apps
+    deploymentMode = "Monolithic" # one pod with a disk: right for the volume of these services
     loki = {
       auth_enabled = false # one tenant; access is limited by the network policy below
       commonConfig = { replication_factor = 1 }

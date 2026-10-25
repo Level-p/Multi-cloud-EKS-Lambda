@@ -1,25 +1,21 @@
-"""AgriPulse mobile backend: the routes behind https://api.<zone> (AWS WAF -> CloudFront -> API Gateway -> Lambda).
+"""AgriPulse mobile backend: https://api.<zone> (AWS WAF -> CloudFront -> API Gateway -> this Lambda).
 
-Farmers use the mobile app in the field: they keep a list of their fields, record crop
-observations (growth stage, pests, disease, drought) and attach photos.
+A thin gateway for the mobile app, used by buyers and by farmers. It owns no data: every route is one call to the
+production service that owns it, with the user's own token, so the rules (who may see or change what) live in one
+place, the services, for the web and the app alike.
 
-  GET  /health                               no auth
-  GET  /fields                               the caller's fields
-  POST /fields                               add a field
-  GET  /fields/{field_id}/observations       observations of one of the caller's fields
-  POST /fields/{field_id}/observations       record an observation (optionally with photo keys)
-  POST /media/upload-url                     pre-signed S3 POST for one photo (type and size enforced by S3)
+  GET  /health
+  POST /auth/register   POST /auth/token   GET /me                                       -> accounts
+  GET  /catalog         GET /items/{id}                                                   -> shop   (public)
+  GET|POST /orders      POST /orders/{id}/cancel   GET /sales   POST /sales/{id}/status   -> shop
+  GET|PUT /farm/profile   GET|POST /farm/listings   PATCH|DELETE /farm/listings/{id}
+  POST /farm/listings/{id}/photo   GET|POST /farm/activities                              -> farm
 
 Edge: CloudFront adds X-Origin-Verify (a secret only it and this function know); without it every route but
 /health answers 403, so the execute-api URL cannot be used to skip the WAF.
-Identity: API Gateway's Cognito authorizer has verified the farmer's token; the farmer's id is its "sub"
-claim (handler.py passes it in). Every field is owned by one farmer and every request checks the owner
-(OWASP API1: broken object level authorization).
-Storage: PostgreSQL on RDS (db.py). Photos: S3, scanned by GuardDuty Malware Protection and served through
-CloudFront only when clean.
-
-handle() knows nothing about Lambda: handler.py adapts the API Gateway event to it, the tests and the DAST
-stand-in (app/dast/mobile_local.py) call it directly.
+The calls to the services go out through CloudFront and the WAF like any client's, with X-Mobile-Gateway (a
+second secret) so the per-IP rate limit does not treat all app users, who share this function's addresses, as one.
+Standard library only: nothing to patch, a tiny package.
 """
 
 import hmac
@@ -27,227 +23,132 @@ import json
 import logging
 import os
 import re
-import uuid
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from typing import Literal
-
-from pydantic import BaseModel, Field, ValidationError, field_validator
-from sqlalchemy import select
-
-from .db import FieldRow, ObservationRow, make_session_factory
 
 log = logging.getLogger("agripulse.mobile")
 
-MAX_PHOTO_BYTES = 10 * 1024 * 1024
 MAX_BODY_BYTES = 64 * 1024
-PHOTO_TYPES = {"image/jpeg": "jpg", "image/png": "png", "image/webp": "webp"}
+MAX_QUERY = 500
+TIMEOUT = float(os.environ.get("UPSTREAM_TIMEOUT", "8"))
 HEADERS = {"Content-Type": "application/json", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff",
            "Strict-Transport-Security": "max-age=31536000"}
+
+# method(s), path, service, path at the service ({0} = the id from the path)
+ROUTES = [
+    ("POST", r"/auth/register", "accounts", "/api/register"),
+    ("POST", r"/auth/token", "accounts", "/api/token"),
+    ("GET", r"/me", "accounts", "/api/me"),
+    ("GET", r"/catalog", "shop", "/api/catalog"),
+    ("GET", r"/items/(\d{1,12})", "shop", "/api/items/{0}"),
+    ("GET|POST", r"/orders", "shop", "/api/orders"),
+    ("POST", r"/orders/(\d{1,12})/cancel", "shop", "/api/orders/{0}/cancel"),
+    ("GET", r"/sales", "shop", "/api/sales"),
+    ("POST", r"/sales/(\d{1,12})/status", "shop", "/api/sales/{0}/status"),
+    ("GET|PUT", r"/farm/profile", "farm", "/api/profile"),
+    ("GET|POST", r"/farm/listings", "farm", "/api/listings"),
+    ("PATCH|DELETE", r"/farm/listings/(\d{1,12})", "farm", "/api/listings/{0}"),
+    ("POST", r"/farm/listings/(\d{1,12})/photo", "farm", "/api/listings/{0}/photo"),
+    ("GET|POST", r"/farm/activities", "farm", "/api/activities"),
+]
+COMPILED = [(set(m.split("|")), re.compile(f"^{p}/?$"), svc, target) for m, p, svc, target in ROUTES]
+SERVICE_URL_ENV = {"accounts": "ACCOUNTS_URL", "farm": "FARM_URL", "shop": "SHOP_URL"}
 
 
 @dataclass
 class Response:
     status: int
-    body: dict | None = None
+    body: object = None
     headers: dict = field(default_factory=lambda: dict(HEADERS))
 
     def text(self) -> str:
         return json.dumps(self.body) if self.body is not None else ""
 
 
-class HttpError(Exception):
-    def __init__(self, status: int, message: str):
-        super().__init__(message)
-        self.status, self.message = status, message
+def error(status: int, message: str) -> Response:
+    return Response(status, {"detail": message})
 
 
-# ---------------- dependencies (built once per worker; replaced by the tests and the DAST stand-in) ----------------
-@dataclass
-class Dependencies:
-    sessions: object
-    s3: object
-    media_bucket: str
-    media_cdn_domain: str
-    origin_secret: str = ""
+def origin_ok(headers: dict) -> bool:
+    expected = os.environ.get("ORIGIN_VERIFY_SECRET", "")
+    if not expected:   # the DAST stand-in and the tests run without CloudFront
+        return True
+    given = next((v for k, v in headers.items() if k.lower() == "x-origin-verify"), "")
+    return hmac.compare_digest(given.encode(), expected.encode())
 
 
-_deps: Dependencies | None = None
+def header(headers: dict, name: str) -> str | None:
+    return next((v for k, v in headers.items() if k.lower() == name), None)
 
 
-def configure(deps: Dependencies | None):
-    global _deps
-    _deps = deps
+def route(method: str, path: str):
+    for methods, pattern, service, target in COMPILED:
+        m = pattern.match(path)
+        if m:
+            if method not in methods:
+                return "method", None
+            return service, target.format(*m.groups())
+    return None, None
 
 
-def deps() -> Dependencies:
-    global _deps
-    if _deps is None:
-        import boto3
-        _deps = Dependencies(sessions=make_session_factory(), s3=boto3.client("s3"),
-                             media_bucket=os.environ["MEDIA_BUCKET"], media_cdn_domain=os.environ.get("MEDIA_CDN_DOMAIN", ""),
-                             origin_secret=os.environ.get("ORIGIN_VERIFY_SECRET", ""))
-    return _deps
-
-
-def now() -> datetime:
-    return datetime.now(timezone.utc)
-
-
-# ---------------- models ----------------
-class FieldIn(BaseModel):
-    name: str = Field(min_length=1, max_length=80)
-    crop: str = Field(min_length=2, max_length=40, pattern=r"^[A-Za-z][A-Za-z \-]+$")
-    area_ha: float = Field(gt=0, le=100_000)
-    latitude: float = Field(ge=-90, le=90)
-    longitude: float = Field(ge=-180, le=180)
-
-
-class ObservationIn(BaseModel):
-    growth_stage: Literal["planting", "emergence", "vegetative", "flowering", "fruiting", "harvest"]
-    issue: Literal["none", "pest", "disease", "drought", "flood", "nutrient"]
-    note: str = Field(default="", max_length=2000)
-    media_keys: list[str] = Field(default_factory=list, max_length=5)
-
-    @field_validator("media_keys")
-    @classmethod
-    def own_uploads_only(cls, keys):
-        for k in keys:
-            if not k.startswith("uploads/") or ".." in k:
-                raise ValueError("media_keys must be keys returned by /media/upload-url")
-        return keys
-
-
-class UploadIn(BaseModel):
-    content_type: str
-    size_bytes: int = Field(gt=0, le=MAX_PHOTO_BYTES)
-
-    @field_validator("content_type")
-    @classmethod
-    def image_only(cls, v):
-        if v not in PHOTO_TYPES:
-            raise ValueError(f"content_type must be one of {sorted(PHOTO_TYPES)}")
-        return v
-
-
-def parse(model, raw: bytes):
-    if len(raw) > MAX_BODY_BYTES:
-        raise HttpError(413, "body too large")
+def forward(service: str, method: str, target: str, query: str, headers: dict, body: bytes) -> Response:
+    base = os.environ.get(SERVICE_URL_ENV[service], "").rstrip("/")
+    if not base:
+        return error(503, f"{service} is not configured")
+    url = base + target + (f"?{query}" if query else "")
+    out = {"Accept": "application/json", "User-Agent": "agripulse-mobile-gateway/1",
+           "X-Mobile-Gateway": os.environ.get("MOBILE_GATEWAY_SECRET", "")}
+    for name in ("authorization", "content-type"):
+        value = header(headers, name)
+        if value:
+            out[name.title()] = value
+    req = urllib.request.Request(url, data=body if method in ("POST", "PUT", "PATCH") else None, method=method, headers=out)
     try:
-        return model.model_validate(json.loads(raw or b"{}"))
-    except ValidationError as e:
-        raise HttpError(400, str(e).splitlines()[0])
-    except ValueError:
-        raise HttpError(400, "body must be JSON")
+        with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
+            raw = resp.read()
+            return Response(resp.status, json.loads(raw) if raw else None)
+    except urllib.error.HTTPError as err:
+        raw = err.read()
+        try:
+            payload = json.loads(raw) if raw else {"detail": err.reason}
+        except ValueError:
+            payload = {"detail": err.reason}
+        resp = Response(err.code, payload)
+        if err.code == 401:
+            resp.headers["WWW-Authenticate"] = "Bearer"
+        return resp
+    except (urllib.error.URLError, TimeoutError, OSError):
+        log.error(json.dumps({"event": "upstream unavailable", "service": service}))
+        return error(503, f"{service} is unavailable, try again shortly")
 
 
-def field_out(f: FieldRow) -> dict:
-    return {"field_id": f.id, "name": f.name, "crop": f.crop, "area_ha": f.area_ha, "latitude": f.latitude,
-            "longitude": f.longitude, "created_at": f.created_at.isoformat()}
+def handle(method: str, path: str, headers: dict, body: bytes, query: str = "") -> Response:
+    started = time.perf_counter()
+    method = method.upper()
+    if path == "/health" and method == "GET":
+        return Response(200, {"status": "ok"})
+    if not origin_ok(headers):
+        return error(403, "forbidden")
+    if len(body) > MAX_BODY_BYTES:
+        return error(413, "request body too large")
+    if len(query) > MAX_QUERY:
+        return error(414, "query string too long")
+    service, target = route(method, path)
+    if service is None:
+        return error(404, "not found")
+    if service == "method":
+        return error(405, "method not allowed")
+    resp = forward(service, method, target, query, headers, body)
+    log.info(json.dumps({"route": path if service != "farm" else re.sub(r"\d+", "{id}", path), "method": method,
+                         "service": service, "status": resp.status, "ms": round((time.perf_counter() - started) * 1000)}))
+    return resp
 
 
-def observation_out(o: ObservationRow) -> dict:
-    return {"observation_id": o.id, "created_at": o.created_at.isoformat(), "created_by": o.created_by,
-            "growth_stage": o.growth_stage, "issue": o.issue, "note": o.note, "media_keys": json.loads(o.media_keys)}
-
-
-# ---------------- routes ----------------
-def list_fields(uid: str, _raw: bytes) -> Response:
-    with deps().sessions() as db:
-        rows = db.scalars(select(FieldRow).where(FieldRow.owner == uid).order_by(FieldRow.created_at)).all()
-    return Response(200, {"fields": [field_out(f) for f in rows]})
-
-
-def create_field(uid: str, raw: bytes) -> Response:
-    data = parse(FieldIn, raw)
-    row = FieldRow(id=uuid.uuid4().hex, owner=uid, created_at=now(), **data.model_dump())
-    with deps().sessions() as db:
-        db.add(row)
-        db.commit()
-    log.info("field created")
-    return Response(201, field_out(row))
-
-
-def owned_field(db, field_id: str, uid: str) -> FieldRow:
-    """404 for both "does not exist" and "not yours": never reveal other farmers' fields."""
-    row = db.get(FieldRow, field_id) if re.fullmatch(r"[0-9a-f]{32}", field_id) else None
-    if row is None or row.owner != uid:
-        raise HttpError(404, "field not found")
-    return row
-
-
-def list_observations(uid: str, _raw: bytes, field_id: str) -> Response:
-    with deps().sessions() as db:
-        owned_field(db, field_id, uid)
-        rows = db.scalars(select(ObservationRow).where(ObservationRow.field_id == field_id)
-                          .order_by(ObservationRow.created_at.desc()).limit(100)).all()
-    return Response(200, {"observations": [observation_out(o) for o in rows]})
-
-
-def create_observation(uid: str, raw: bytes, field_id: str) -> Response:
-    with deps().sessions() as db:
-        owned_field(db, field_id, uid)
-        data = parse(ObservationIn, raw)
-        if any(not k.startswith(f"uploads/{uid}/") for k in data.media_keys):
-            raise HttpError(400, "media_keys must be your own uploads")
-        row = ObservationRow(id=uuid.uuid4().hex, field_id=field_id, created_by=uid, created_at=now(),
-                             growth_stage=data.growth_stage, issue=data.issue, note=data.note,
-                             media_keys=json.dumps(data.media_keys))
-        db.add(row)
-        db.commit()
-    if data.issue != "none":
-        log.info("observation with issue %s", data.issue)
-    return Response(201, observation_out(row))
-
-
-def upload_url(uid: str, raw: bytes) -> Response:
-    data = parse(UploadIn, raw)
-    d = deps()
-    key = f"uploads/{uid}/{uuid.uuid4().hex}.{PHOTO_TYPES[data.content_type]}"
-    # S3 itself enforces the type and the maximum size; the URL expires in 5 minutes
-    post = d.s3.generate_presigned_post(
-        Bucket=d.media_bucket, Key=key,
-        Fields={"Content-Type": data.content_type},
-        Conditions=[{"Content-Type": data.content_type}, ["content-length-range", 1, MAX_PHOTO_BYTES]],
-        ExpiresIn=300)
-    return Response(200, {"key": key, "upload": post, "cdn_url": f"https://{d.media_cdn_domain}/{key}",
-                          "note": "The photo becomes visible on the CDN after the malware scan marks it clean."})
-
-
-FIELD_ID = r"(?P<field_id>[^/]{1,64})"
-ROUTES = [
-    ("GET", re.compile(r"^/fields$"), list_fields),
-    ("POST", re.compile(r"^/fields$"), create_field),
-    ("GET", re.compile(rf"^/fields/{FIELD_ID}/observations$"), list_observations),
-    ("POST", re.compile(rf"^/fields/{FIELD_ID}/observations$"), create_observation),
-    ("POST", re.compile(r"^/media/upload-url$"), upload_url),
-]
-
-
-def handle(method: str, path: str, headers: dict, body: bytes = b"", user: str | None = None) -> Response:
-    """user: the Cognito "sub" API Gateway's authorizer verified (None: no valid token)."""
-    headers = {k.lower(): v for k, v in headers.items()}
-    path = "/" + path.strip("/")
-    try:
-        if path == "/health":
-            if method != "GET":
-                raise HttpError(405, "method not allowed")
-            return Response(200, {"status": "ok"})
-        d = deps()
-        if d.origin_secret and not hmac.compare_digest(headers.get("x-origin-verify", ""), d.origin_secret):
-            raise HttpError(403, "forbidden")
-        matched = [(m, p.match(path), fn) for m, p, fn in ROUTES if p.match(path)]
-        if not matched:
-            raise HttpError(404, "not found")
-        route = next(((rx, fn) for m, rx, fn in matched if m == method), None)
-        if route is None:
-            raise HttpError(405, "method not allowed")
-        if not user:
-            raise HttpError(401, "unauthorised")
-        rx, fn = route
-        return fn(user, body, **rx.groupdict())
-    except HttpError as e:
-        return Response(e.status, {"error": e.message})
-    except Exception:
-        log.exception("unhandled error")
-        return Response(500, {"error": "internal error"})
+def query_string(event: dict) -> str:
+    multi = event.get("multiValueQueryStringParameters") or {}
+    if multi:
+        return urllib.parse.urlencode([(k, v) for k, vs in multi.items() for v in vs])
+    return urllib.parse.urlencode(event.get("queryStringParameters") or {})

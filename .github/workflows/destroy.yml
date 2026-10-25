@@ -8,7 +8,7 @@
 #             cluster is simply forgotten by Terraform: it goes with the cluster in the aws job
 #   aws       EKS, VPC, NAT, RDS PostgreSQL (no final snapshot unless deletion_protection), ALB, the WAF and
 #             the three CloudFront distributions, API Gateway + Lambda, ECR, KMS keys (7-day deletion window),
-#             the S3 media bucket and its files, Cognito, Secrets Manager, EventBridge -> Slack, the DNS records
+#             the S3 media bucket and its files, Secrets Manager, EventBridge -> Slack, the DNS records
 #
 # Kept: what infra/bootstrap.sh made (the S3 state bucket, the GitHub Actions role) and the Route 53 zone.
 # ---------------------------------------------------------------------------
@@ -133,7 +133,7 @@ jobs:
           TF_VAR_slack_webhook_url: ${{ secrets.SLACK_WEBHOOK_URL }}   # a required variable of infra/aws
         run: |
           terraform init -input=false
-          # deletion_protection = true (RDS, ALB, Cognito, images, media files kept) makes this fail on purpose
+          # deletion_protection = true (RDS, ALB, images, media files kept) makes this fail on purpose
           terraform destroy -input=false -auto-approve
           {
             echo "### AWS destroyed"

@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block title %}Your account · AgriPulse{% endblock %}
+{% block content %}
+<div class="card">
+  {% if me %}
+    <h1>{{ me.name }}</h1>
+    <p>{{ me.email }} · <span class="tag">{{ me.role }}</span></p>
+    <p><a class="button" href="{{ home }}">Continue</a> <a href="/logout">Sign out</a></p>
+  {% else %}
+    <h1>AgriPulse account</h1>
+    <p>One account for the shop, the farmer portal and the mobile app.</p>
+    <p><a class="button" href="/login">Sign in</a> <a href="/register">Register</a></p>
+  {% endif %}
+</div>
+{% endblock %}

@@ -1,0 +1,66 @@
+# Defaults. Each service sets its own in gitops/services/<service>/values.yaml; the image of each environment is in
+# gitops/services/<service>/<environment>.yaml (written by the pipeline); values marked (Terraform) come from the
+# Argo CD Application created in infra/modules/k8s-gitops, so no environment-specific id ever lives in Git.
+service: ""                    # accounts | farm | shop | incidents
+environment: ""                # (Terraform) staging | production
+
+image:
+  registry: ""                 # (Terraform) <account>.dkr.ecr.<region>.amazonaws.com
+  repository: ""               # agripulse/<service>
+  tag: initial                 # written by the service's pipeline (GitOps commit)
+  digest: ""                   # written with the tag: sha256 of the image the pipeline built and signed
+requireBuiltImage: false       # (Terraform) true in the cluster: the placeholder tag does not render
+
+publicUrl: ""                  # (Terraform) https://<service>[.staging].<zone>
+urls: { accounts: "", farm: "", shop: "", incidents: "" }   # (Terraform) the public URLs of this environment
+cookie: { domain: "", name: agripulse_session }            # (Terraform) parent domain of this environment
+jwt: { issuer: "" }            # (Terraform) agripulse-accounts-<environment>
+
+db:
+  host: ""                     # (Terraform) RDS PostgreSQL endpoint (the Multi-AZ primary)
+  port: 5432                   # (Terraform)
+  name: ""                     # (Terraform) <service>_<environment>
+  user: ""                     # (Terraform) its IAM-authenticated PostgreSQL user
+
+aws:
+  region: ""                   # (Terraform)
+  targetGroupArn: ""           # (Terraform) the ALB target group of this service and environment
+  albSourceCidrs: []           # (Terraform) public subnets of the ALB: the only outside source the pods accept
+  secretPrefix: ""             # (Terraform) agripulse/<environment>: this environment's secrets
+  secretRoot: ""               # (Terraform) agripulse: for secrets shared by all environments ("/platform/...")
+
+# Secrets Manager -> environment variables: { env: VARIABLE, secret: "<path under secretPrefix>" | "/<path under secretRoot>" }
+secrets: []
+# Plain settings of the service
+env: {}
+# Namespaces (without the environment suffix) allowed to call this service inside the cluster, e.g. [shop]
+internalCallers: []
+# Extra alert rules of the service: { alert, expr (NAMESPACE is replaced), for, severity, summary }
+alerts: []
+
+replicas: 2
+rollout:
+  pause: 2m
+  successRateThreshold: "0.99"
+  latencyP95Seconds: "0.5"
+
+resources:
+  requests: { cpu: 100m, memory: 192Mi }
+  limits: { memory: 384Mi }
+
+# Redis cache (Valkey) in this service's namespace: templates/redis.yaml. Images are pinned by digest and allowed by
+# name in Kyverno (infra/modules/k8s-policy): change both together.
+redis:
+  enabled: false
+  image: docker.io/valkey/valkey:9.2-alpine@sha256:cdcb7b1c7b6f1c9cb9442c71ac6275e78184657448407b2c1fdde7ee8024f4fb
+  exporterImage: docker.io/oliver006/redis_exporter:v1.93.0@sha256:6ca518a72f30f7f576ef92963de1b91d3c3f5fd3aeac949f878bfda183587820
+  maxMemory: 200mb
+  resources:
+    requests: { cpu: 50m, memory: 64Mi }
+    limits: { memory: 256Mi }
+
+# OpenTelemetry: traces and logs over OTLP/HTTP to the collector in the "monitoring" namespace, which forwards traces
+# to Tempo and logs to Loki (both in Grafana). Empty endpoint = off.
+telemetry:
+  otlpEndpoint: http://otel-collector.monitoring.svc:4318
+  samplingRatio: "1.0"   # share of new traces kept (parent-based); lower it if traffic grows

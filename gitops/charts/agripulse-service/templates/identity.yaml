@@ -1,0 +1,33 @@
+# EKS Pod Identity association (infra/aws, one per service and environment) for this ServiceAccount: read its own
+# secrets in Secrets Manager, and rds-db:connect as its own PostgreSQL user (no database password anywhere)
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "svc.name" . }}
+  labels: {{- include "svc.labels" . | nindent 4 }}
+{{- if .Values.secrets }}
+---
+# Secrets Manager -> files in the pod and the Kubernetes Secret "<service>-secrets" (environment variables)
+apiVersion: secrets-store.csi.x-k8s.io/v1
+kind: SecretProviderClass
+metadata:
+  name: {{ include "svc.name" . }}-secrets
+spec:
+  provider: aws
+  parameters:
+    usePodIdentity: "true"
+    region: {{ .Values.aws.region | quote }}
+    objects: |
+      {{- range .Values.secrets }}
+      - objectName: "{{ include "svc.secretName" (list . $) }}"
+        objectType: secretsmanager
+        objectAlias: {{ .env }}
+      {{- end }}
+  secretObjects:
+    - secretName: {{ include "svc.name" . }}-secrets
+      type: Opaque
+      data:
+        {{- range .Values.secrets }}
+        - { objectName: {{ .env }}, key: {{ .env }} }
+        {{- end }}
+{{- end }}

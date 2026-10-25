@@ -5,7 +5,7 @@ useDefault = true
 [allowlist]
 description = "Intentional fake secrets in tests and rule fixtures"
 paths = [
-  '''app/(mobile-backend|web|incident-blog|dast)/tests/.*''',
+  '''app/(mobile-backend|accounts|farm|shop|incidents|common|dast)/tests/.*''',
   '''\.github/scripts/test_.*\.py''',
   '''\.semgrep/ai-code-rules\.py''',
 ]

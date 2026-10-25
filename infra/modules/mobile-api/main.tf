@@ -1,11 +1,11 @@
 # ---------------------------------------------------------------------------
-# Mobile API: CloudFront (WAF, modules/edge) -> API Gateway REST (Cognito authorizer, throttling, logs)
-#             -> Lambda alias "live" (in the VPC) -> RDS PostgreSQL (IAM token) / S3 (pre-signed POST)
+# Mobile API: CloudFront (WAF, modules/edge) -> API Gateway REST (throttling, access logs) -> Lambda alias "live"
+#             -> the production services (accounts, farm, shop) through CloudFront, with the user's own token
 #
+# The Lambda owns no data and checks no passwords: it is the mobile app's gateway to the same services the web
+# uses, so every rule lives in one place. No VPC, no database: nothing to connect to but HTTPS.
 # The pipeline deploys new code as a new Lambda version and shifts the "live" alias with a canary (10 %,
 # CloudWatch check, then 100 % or rollback: .github/scripts/lambda_canary.sh), so Terraform ignores those fields.
-# The Lambda needs no internet: PostgreSQL is in the VPC, and both the IAM database token and the S3
-# pre-signed POST are signed locally with the execution role's credentials.
 # CloudFront adds X-Origin-Verify; without it the Lambda answers 403 (except /health), so the
 # execute-api URL cannot be used to skip the WAF.
 # ---------------------------------------------------------------------------
@@ -34,21 +34,13 @@ resource "aws_iam_role" "lambda" {
   })
 }
 
-# ENIs in the VPC (and basic logging)
-resource "aws_iam_role_policy_attachment" "lambda_vpc" {
-  role       = aws_iam_role.lambda.name
-  policy_arn = "arn:${data.aws_partition.current.partition}:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
-}
-
-# Least privilege: its own database user, uploads/ only, its own logs, X-Ray
+# Least privilege: its own logs and X-Ray, nothing else (the services do the work)
 resource "aws_iam_role_policy" "lambda" {
   name = "mobile-api"
   role = aws_iam_role.lambda.id
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
-      { Effect = "Allow", Action = ["rds-db:connect"], Resource = var.db_connect_arn },
-      { Effect = "Allow", Action = ["s3:PutObject"], Resource = "${var.media_bucket_arn}/uploads/*" },
       { Effect = "Allow", Action = ["logs:CreateLogStream", "logs:PutLogEvents"], Resource = "${aws_cloudwatch_log_group.lambda.arn}:*" },
       { Effect = "Allow", Action = ["xray:PutTraceSegments", "xray:PutTelemetryRecords"], Resource = "*" },
     ]
@@ -57,7 +49,8 @@ resource "aws_iam_role_policy" "lambda" {
 
 resource "aws_lambda_function" "api" {
   #checkov:skip=CKV_AWS_116:Synchronous API calls: a dead-letter queue does not apply
-  #checkov:skip=CKV_AWS_173:Environment variables hold no secrets except the origin header value (encrypted at rest by Lambda)
+  #checkov:skip=CKV_AWS_173:Environment variables hold no secrets except the two edge header values (encrypted at rest by Lambda)
+  #checkov:skip=CKV_AWS_117:No VPC on purpose: the function only calls the public service endpoints (through CloudFront and the WAF)
   function_name                  = "${var.name}-mobile-api"
   role                           = aws_iam_role.lambda.arn
   runtime                        = "python3.12"
@@ -68,23 +61,16 @@ resource "aws_lambda_function" "api" {
   memory_size                    = 512
   timeout                        = 10
   publish                        = true
-  reserved_concurrent_executions = var.reserved_concurrency # caps PostgreSQL connections (one per instance); -1 = none
-
-  vpc_config {
-    subnet_ids         = var.subnet_ids
-    security_group_ids = [var.security_group_id]
-  }
+  reserved_concurrent_executions = var.reserved_concurrency # -1 = none (new accounts' quota is 10, all unreserved)
 
   environment {
     variables = {
-      DB_HOST              = var.db_host
-      DB_PORT              = tostring(var.db_port)
-      DB_NAME              = "mobile"
-      DB_USER              = var.db_user
-      DB_SSLROOTCERT       = "global-bundle.pem" # RDS CA bundle, packaged next to the code by the pipeline
-      MEDIA_BUCKET         = var.media_bucket
-      MEDIA_CDN_DOMAIN     = var.media_cdn_domain
-      ORIGIN_VERIFY_SECRET = var.origin_verify_secret
+      ACCOUNTS_URL          = var.service_urls["accounts"]
+      FARM_URL              = var.service_urls["farm"]
+      SHOP_URL              = var.service_urls["shop"]
+      UPSTREAM_TIMEOUT      = "8"
+      ORIGIN_VERIFY_SECRET  = var.origin_verify_secret
+      MOBILE_GATEWAY_SECRET = var.mobile_gateway_secret
     }
   }
 
@@ -101,8 +87,6 @@ resource "aws_lambda_function" "api" {
   lifecycle {
     ignore_changes = [filename, source_code_hash, handler]
   }
-
-  depends_on = [aws_iam_role_policy_attachment.lambda_vpc]
 }
 
 resource "aws_lambda_alias" "live" {
@@ -115,20 +99,12 @@ resource "aws_lambda_alias" "live" {
   }
 }
 
-# ---------------- API Gateway (REST: Cognito authorizer, usage throttling) ----------------
+# ---------------- API Gateway (REST: throttling, access logs; the services check the tokens) ----------------
 resource "aws_api_gateway_rest_api" "mobile" {
   name = "${var.name}-mobile"
   endpoint_configuration {
     types = ["REGIONAL"] # CloudFront (modules/edge) is the edge
   }
-}
-
-resource "aws_api_gateway_authorizer" "cognito" {
-  name            = "cognito"
-  rest_api_id     = aws_api_gateway_rest_api.mobile.id
-  type            = "COGNITO_USER_POOLS"
-  provider_arns   = [var.user_pool_arn]
-  identity_source = "method.request.header.Authorization"
 }
 
 resource "aws_api_gateway_resource" "health" {
@@ -150,12 +126,13 @@ resource "aws_api_gateway_method" "health" {
   authorization = "NONE"
 }
 
+# Sign-in and the catalog are public; every other route needs the user's token, which the service checks
 resource "aws_api_gateway_method" "proxy" {
+  #checkov:skip=CKV_AWS_59:Authorization is the services' (signed tokens); public routes are sign-in and the catalog
   rest_api_id   = aws_api_gateway_rest_api.mobile.id
   resource_id   = aws_api_gateway_resource.proxy.id
   http_method   = "ANY"
-  authorization = "COGNITO_USER_POOLS"
-  authorizer_id = aws_api_gateway_authorizer.cognito.id
+  authorization = "NONE"
 }
 
 resource "aws_api_gateway_integration" "this" {
@@ -184,7 +161,7 @@ resource "aws_api_gateway_deployment" "this" {
   rest_api_id = aws_api_gateway_rest_api.mobile.id
   triggers = {
     redeploy = sha1(jsonencode([aws_api_gateway_resource.proxy, aws_api_gateway_method.proxy, aws_api_gateway_method.health,
-    aws_api_gateway_integration.this, aws_api_gateway_authorizer.cognito]))
+    aws_api_gateway_integration.this]))
   }
   lifecycle {
     create_before_destroy = true
@@ -223,7 +200,7 @@ resource "aws_api_gateway_stage" "prod" {
   access_log_settings {
     destination_arn = aws_cloudwatch_log_group.api_access.arn
     format = jsonencode({
-      requestId = "$context.requestId", ip = "$context.identity.sourceIp", user = "$context.authorizer.claims.sub",
+      requestId = "$context.requestId", ip = "$context.identity.sourceIp",
       method    = "$context.httpMethod", path = "$context.resourcePath", status = "$context.status",
       latencyMs = "$context.responseLatency", error = "$context.error.message"
     })

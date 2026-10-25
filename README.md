@@ -1,75 +1,106 @@
-# AgriPulse: AgriTech on AWS (EKS + Lambda + RDS PostgreSQL)
+# AgriPulse: farm-to-buyer marketplace on AWS (EKS microservices + Lambda + RDS PostgreSQL)
 
-| Part | Runs on | Code |
-|---|---|---|
-| Web app for agronomists (farms, harvests, market prices), Redis cache-aside | **EKS** (Argo Rollouts canary, oauth2-proxy with Cognito), Valkey cache in the cluster | `app/web`, `gitops/charts/agripulse-web` |
-| Incident-response blog (NIST lifecycle, MTTA/MTTR, alert webhooks) | **EKS** | `app/incident-blog`, `gitops/charts/incident-blog` |
-| Mobile API for farmers (fields, observations, photo uploads) | **API Gateway + Lambda** (Cognito authorizer, alias canary) | `app/mobile-backend`, `infra/modules/mobile-api` |
-| The database of all three | **RDS PostgreSQL 18, `db.t3.micro`, Multi-AZ**, IAM authentication | `infra/modules/database` |
-| Static images | **S3** + **CloudFront**, GuardDuty malware scanning | `infra/modules/storage`, `edge` |
-| Edge protection | **One AWS WAF web ACL** (incl. SQL injection rules) on all three CloudFront distributions | `infra/modules/edge` |
-| Observability, AIOps | OpenTelemetry -> Tempo, Loki, Prometheus; Grafana; static + anomaly alert rules (apps and AWS via YACE); Claude failure diagnosis | `infra/modules/k8s-observability`, `monitoring` |
-| Alerting | **Slack only**: Alertmanager sends every alert to Slack (critical/warning also open an incident in the blog); GuardDuty and RDS events reach Slack through EventBridge. No SNS, no e-mail | `k8s-observability/alerts.tf`, `prometheus.tf`, `modules/monitoring` |
-| CI/CD, GitOps | GitHub Actions (OIDC, no keys) + Argo CD | `.github`, `infra/modules/k8s-gitops` |
+Farmers register, describe their farm (location, size, monthly capacity), list produce and farm resources with their
+own prices, and keep farm records. Buyers register and order straight from the farm (pay on delivery), on the web or in
+the mobile app. The operations team records incidents, and every incident is reported to Slack.
+
+| Part | What it does | Runs on | Code |
+|---|---|---|---|
+| **accounts** | Sign-up and sign-in for farmers and buyers; signs the tokens every service checks | EKS | `app/accounts` |
+| **farm** | Farmer profiles, listings, farm records, listing photos; stock reservations for the shop | EKS | `app/farm` |
+| **shop** | Catalog, carts (Redis), orders: one per farm, pay on delivery | EKS (+ Valkey) | `app/shop` |
+| **incidents** | The operations team's incident blog; every incident reported to Slack | EKS | `app/incidents` |
+| **mobile API** | The mobile app's gateway to accounts, farm and shop | API Gateway + Lambda | `app/mobile-backend` |
+
+Every microservice runs in **staging and production**, each in its own namespace (`shop-staging`, `shop-production`...)
+with its own database, all deployed by **Argo CD** from `gitops/`. A merge goes to staging automatically; production
+gets the same signed image after approval, each release as a canary that Prometheus judges.
+
+| | |
+|---|---|
+| Database | ONE **RDS PostgreSQL 18, `db.t3.micro`, Multi-AZ**; a database and an IAM-authenticated user per service and environment |
+| Edge | ONE **AWS WAF** (incl. SQL injection) on three CloudFront distributions; the ALB and API Gateway accept only CloudFront |
+| Observability | **OpenTelemetry** -> Tempo, Loki; **Prometheus** + **Grafana** (kube-prometheus-stack); CloudWatch metrics via YACE |
+| Alerting | **Slack only**: every alert; production alerts also open an incident, which the blog reports to Slack |
+| AIOps | **Claude** explains every failed pipeline run in Slack; anomaly alert rules; automated canary analysis; Semgrep rules for AI-written code |
+| CI/CD, GitOps | GitHub Actions (OIDC, no keys), Argo CD + Argo Rollouts, Kyverno (signed images only), Dependabot |
 
 ![AgriPulse AWS architecture](architecture/agripulse-aws-architecture.png)
 
 | Guide | |
 |---|---|
-| [docs/AgriPulse-AWS-Deployment-Guide.docx](docs/AgriPulse-AWS-Deployment-Guide.docx) | Architecture, bootstrap, GitHub settings, first deployment, checks, security controls, day-to-day operations, troubleshooting, cost, teardown |
-| [docs/AgriPulse-App-Guide.docx](docs/AgriPulse-App-Guide.docx) | The three applications: APIs, data, the code file by file, running and testing locally, changing the application |
+| [docs/AgriPulse-AWS-Deployment-Guide.docx](docs/AgriPulse-AWS-Deployment-Guide.docx) | Architecture, bootstrap, GitHub settings, first deployment, security controls, **AI in this project**, day-to-day operations, troubleshooting, cost, teardown |
+| [docs/AgriPulse-App-Guide.docx](docs/AgriPulse-App-Guide.docx) | The services and the mobile gateway: APIs, data, the code file by file, running and testing locally, changing them |
 | [docs/AgriPulse-Deployment-Error-Report.docx](docs/AgriPulse-Deployment-Error-Report.docx) | Every error of the first deployment: root cause, fix, and the guard that now prevents it |
 | [architecture/](architecture/) | AWS architecture, CI/CD pipelines, request flow with the check at every hop (`.drawio` + PNG) |
 | [app/dast/README.md](app/dast/README.md) | OWASP ZAP in the pipelines |
 
 ## Endpoints (Route 53 zone `mfon21.space`)
 
-| URL | Path |
+| URL | |
 |---|---|
-| `https://agripulse.mfon21.space` | WAF -> CloudFront -> ALB -> oauth2-proxy (Cognito staff) -> web app (EKS) |
-| `https://incidents.mfon21.space` | WAF -> CloudFront -> ALB -> oauth2-proxy (Cognito staff) -> incident blog (EKS) |
-| `https://argocd.mfon21.space` | WAF -> CloudFront -> ALB -> Argo CD (user `admin`, password: `terraform output argocd_password_command` in `infra/platform`) |
-| `https://grafana.mfon21.space` | WAF -> CloudFront -> ALB -> Grafana (user `admin`, password in Secrets Manager `agripulse/platform/grafana-admin-password`) |
-| `https://api.mfon21.space` | WAF -> CloudFront -> API Gateway (Cognito farmers) -> Lambda |
-| `https://media.mfon21.space` | WAF -> CloudFront -> S3 (static images; uploads only after GuardDuty marked them clean) |
+| `https://shop.mfon21.space` | the shop (buyers; farmers buying farm resources) |
+| `https://farm.mfon21.space` | the farmer portal |
+| `https://accounts.mfon21.space` | register, sign in (one account for web and mobile) |
+| `https://incidents.mfon21.space` | the incident blog (ops accounts) |
+| `https://api.mfon21.space` | the mobile API |
+| `https://media.mfon21.space` | listing photos (only uploads GuardDuty marked clean) |
+| `https://argocd.mfon21.space`, `https://grafana.mfon21.space` | Argo CD and Grafana (their own admin sign-in) |
+
+Staging: the same names under `staging.mfon21.space` (`shop.staging.mfon21.space`...). Every request passes AWS WAF and
+CloudFront first.
 
 ## Where the Claude (Anthropic) API key goes
 
 GitHub > the repository > **Settings > Secrets and variables > Actions > New repository secret**:
 **`ANTHROPIC_API_KEY`** = your `sk-ant-...` key. When a workflow run fails, its `diagnose` job sends the redacted
-logs of the failed steps to Claude and posts the likely cause and fix to Slack and the run's summary page. The key is needed only there, never in Terraform or the cluster.
+logs of the failed steps to Claude and posts the likely cause and fix to Slack and the run's summary page. The key is
+needed only there, never in Terraform or the cluster.
 
 ## Deploy (summary)
 
 1. `cd infra && ./bootstrap.sh`: state bucket + the GitHub OIDC role; add the printed `AWS_ROLE_ARN` as a repository secret.
-2. Add the secrets `SLACK_WEBHOOK_URL` (required: the one alert channel) and `ANTHROPIC_API_KEY`, and the variable `CLUSTER_ADMIN_ARNS` = `["arn:aws:iam::<account>:user/<you>"]` (then `aws eks update-kubeconfig --name agripulse-eks --region eu-west-2` just works). Scans report only until the variable `SECURITY_GATES` = `enforce`; create the environments `agripulse-infrastructure` and `agripulse-production` with yourself as reviewer.
-3. Run **infra-aws**, then **platform**, then **web**, **incident-blog**, **mobile-backend**.
-4. Invite yourself to the staff pool and open https://agripulse.mfon21.space.
+2. Add the secrets `SLACK_WEBHOOK_URL` (required) and `ANTHROPIC_API_KEY`, and the variable `CLUSTER_ADMIN_ARNS` =
+   `["arn:aws:iam::<account>:user/<you>"]` (then `aws eks update-kubeconfig --name agripulse-eks --region eu-west-2`
+   just works). Scans report only until the variable `SECURITY_GATES` = `enforce`. Create the environments
+   `agripulse-infrastructure` and `agripulse-production` with yourself as reviewer.
+3. Run **infra-aws**, then **platform**, then **accounts**, **farm**, **shop**, **incidents**, **mobile-backend**.
+4. Register at `https://accounts.mfon21.space/register`; grant yourself the ops role for the incident blog:
+   `kubectl -n accounts-production exec <accounts pod> -- python -m app.admin grant-ops you@example.com`.
 
 Details, checks and costs: [docs/AgriPulse-AWS-Deployment-Guide.docx](docs/AgriPulse-AWS-Deployment-Guide.docx).
 
 ## Layout
 
 ```text
-app/                 web, incident-blog (FastAPI on EKS), mobile-backend (Lambda), dast (OWASP ZAP)
+app/
+  accounts/ farm/ shop/ incidents/   the microservices (FastAPI), each with tests and a hash-locked requirements.txt
+  common/                            code they share: sign-in tokens, web basics, database, cache, telemetry, Slack
+  Dockerfile                         one image recipe: docker build -f app/Dockerfile --build-arg SERVICE=shop app
+  mobile-backend/                    the mobile gateway Lambda (standard library only)
+  dast/                              OWASP ZAP plans, gate and scan setup
 infra/
   bootstrap.sh       once, from a laptop
-  aws/               stack 1: composes infra/modules (network, eks, database, registry, storage, identity,
-                     secrets, mobile-api, edge, monitoring)
-  platform/          stack 2: composes infra/modules/k8s-* (controllers, observability, gitops, policy)
+  aws/               stack 1: composes infra/modules (network, eks, database, registry, storage, secrets,
+                     mobile-api, edge, monitoring); the list of services and environments lives here
+  platform/          stack 2: composes infra/modules/k8s-* (observability, controllers, policy, database, gitops, edge)
   modules/           one folder per module (main.tf, variables.tf, outputs.tf)
-gitops/charts/       Helm charts that Argo CD syncs into EKS
-.github/             workflows (infra-aws, platform, web, incident-blog, mobile-backend, destroy) and actions
+gitops/
+  charts/agripulse-service/          the one Helm chart every service uses
+  services/<service>/                values.yaml (what the service is), staging.yaml, production.yaml (its image there)
+.github/             workflows (infra-aws, platform, accounts, farm, shop, incidents, mobile-backend, destroy),
+                     actions, the Terraform preflight and AI diagnosis scripts, Dependabot
 architecture/        diagrams: draw.io sources + PNG exports
-docs/                the Deployment Guide and the App Guide (Word)
+docs/                the guides and the error report (Word)
 ```
 
 ## Tests (local)
 
 ```bash
-(cd app/mobile-backend && pip install --require-hashes -r requirements.txt -r requirements-dev.in && pytest -q)   # 14
-(cd app/web && pip install --require-hashes -r requirements.txt -r requirements-dev.in && pytest -q)              # 27
-(cd app/incident-blog && pip install --require-hashes -r requirements.txt -r requirements-dev.in && pytest -q)    # 15
-(cd .github/scripts && pytest -q)                                                                                # 24 (AI diagnosis, Terraform preflight)
-python -m pytest -q app/dast/tests                                                                                 # 12 (DAST gate)
+for s in accounts farm shop incidents; do
+  (cd app/$s && pip install --require-hashes -r requirements.txt -r requirements-dev.in && pytest -q)   # 9, 9, 10, 16
+done
+(cd app/mobile-backend && pip install -r requirements-dev.in && pytest -q)                              # 6
+(cd .github/scripts && pytest -q)                                                                        # AI diagnosis, preflight, canary
+python -m pytest -q app/dast/tests                                                                       # 12 (DAST gate)
 ```

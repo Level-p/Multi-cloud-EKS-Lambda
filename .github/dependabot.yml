@@ -11,7 +11,7 @@ version: 2
 
 updates:
   - package-ecosystem: pip
-    directories: ["/app/web", "/app/incident-blog", "/app/mobile-backend"]
+    directories: ["/app/accounts", "/app/farm", "/app/shop", "/app/incidents", "/app/mobile-backend"]
     schedule: { interval: weekly, day: monday }
     open-pull-requests-limit: 10
     labels: [dependencies, python]
@@ -20,7 +20,7 @@ updates:
         update-types: [minor, patch]
 
   - package-ecosystem: docker
-    directories: ["/app/web", "/app/incident-blog"]
+    directories: ["/app"]   # app/Dockerfile: one image recipe for every service
     schedule: { interval: weekly, day: monday }
     labels: [dependencies, docker]
     groups:

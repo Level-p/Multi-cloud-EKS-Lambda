@@ -78,7 +78,6 @@ jobs:
           # Argo CD watches THIS repository (nothing hard-coded); a private repository needs GIT_REPO_TOKEN
           TF_VAR_git_repo_url: ${{ github.server_url }}/${{ github.repository }}.git
           TF_VAR_git_repo_token: ${{ secrets.GIT_REPO_TOKEN }}
-          TF_VAR_price_admins: ${{ vars.PRICE_ADMINS != '' && vars.PRICE_ADMINS || '[]' }}   # e.g. ["you@example.com"]
         run: |
           terraform init -input=false
           terraform fmt -check -recursive . ../modules
@@ -164,7 +163,7 @@ jobs:
             echo "- Argo CD: $(terraform output -raw argocd_url) (user admin; password: \`$(terraform output -raw argocd_password_command)\`)"
             echo "- Grafana: $(terraform output -raw grafana_url) (user admin; password: \`$(terraform output -raw grafana_password_command)\`)"
             echo "- Image signatures: $(terraform output -raw image_signature_mode)"
-            echo "- Next (first deployment): run **web**, **incident-blog** and **mobile-backend**"
+            echo "- Next (first deployment): run **accounts**, **farm**, **shop**, **incidents** and **mobile-backend**"
           } >> "$GITHUB_STEP_SUMMARY"
 
       # A Helm release whose pods never get ready fails with only "context deadline exceeded". Print WHY (pods

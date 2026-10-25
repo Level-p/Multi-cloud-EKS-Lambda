@@ -1,0 +1,154 @@
+# Progressive delivery with automated analysis (the AIOps deployment gate): a new image first runs in a quarter of
+# the pods; the success rate and p95 latency of the CANARY pods (Prometheus) decide whether the rollout continues or
+# aborts and rolls back. Same in staging and production, so staging rehearses the release.
+{{- $name := include "svc.name" . }}
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: {{ $name }}
+  labels: {{- include "svc.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicas }}
+  revisionHistoryLimit: 5
+  selector:
+    matchLabels: { app.kubernetes.io/name: {{ $name }} }
+  strategy:
+    canary:
+      steps:
+        - setWeight: 25
+        - pause: { duration: {{ .Values.rollout.pause }} }
+        - analysis:
+            templates: [{ templateName: canary-health }]
+            args:
+              - name: canary-hash
+                valueFrom: { podTemplateHashValue: Latest }
+        - setWeight: 50
+        - pause: { duration: {{ .Values.rollout.pause }} }
+        - analysis:
+            templates: [{ templateName: canary-health }]
+            args:
+              - name: canary-hash
+                valueFrom: { podTemplateHashValue: Latest }
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ $name }}
+        {{- include "svc.labels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ $name }}
+      securityContext: {{- include "svc.podSecurity" . | nindent 8 }}
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector: { matchLabels: { app.kubernetes.io/name: {{ $name }} } }
+      containers:
+        - name: {{ $name }}
+          image: {{ include "svc.image" . | quote }}
+          ports: [{ name: http, containerPort: 8080 }]
+          env:
+            - { name: ENVIRONMENT, value: {{ .Values.environment | quote }} }
+            - { name: PUBLIC_URL, value: {{ .Values.publicUrl | quote }} }
+            - { name: ACCOUNTS_URL, value: {{ .Values.urls.accounts | quote }} }
+            - { name: FARM_URL, value: {{ .Values.urls.farm | quote }} }
+            - { name: SHOP_URL, value: {{ .Values.urls.shop | quote }} }
+            - { name: INCIDENTS_URL, value: {{ .Values.urls.incidents | quote }} }
+            - { name: COOKIE_DOMAIN, value: {{ .Values.cookie.domain | quote }} }
+            - { name: SESSION_COOKIE, value: {{ .Values.cookie.name | quote }} }
+            - { name: JWT_ISSUER, value: {{ .Values.jwt.issuer | quote }} }
+            # PostgreSQL on RDS with IAM authentication: boto3 signs a token with the pod's role (EKS Pod Identity)
+            - { name: DB_HOST, value: {{ .Values.db.host | quote }} }
+            - { name: DB_PORT, value: {{ .Values.db.port | toString | quote }} }
+            - { name: DB_NAME, value: {{ .Values.db.name | quote }} }
+            - { name: DB_USER, value: {{ .Values.db.user | quote }} }
+            - { name: AWS_REGION, value: {{ .Values.aws.region | quote }} }
+            {{- range $k, $v := .Values.env }}
+            - { name: {{ $k }}, value: {{ $v | toString | quote }} }
+            {{- end }}
+            {{- range .Values.secrets }}
+            - name: {{ .env }}
+              valueFrom: { secretKeyRef: { name: {{ $name }}-secrets, key: {{ .env }} } }
+            {{- end }}
+            {{- if .Values.redis.enabled }}
+            - { name: REDIS_HOST, value: {{ $name }}-redis }        # the in-cluster Valkey Service
+            - { name: REDIS_PORT, value: "6379" }
+            - name: REDIS_PASSWORD
+              valueFrom: { secretKeyRef: { name: {{ $name }}-redis, key: password } }
+            {{- end }}
+            {{- with .Values.telemetry.otlpEndpoint }}
+            - { name: OTEL_EXPORTER_OTLP_ENDPOINT, value: {{ . | quote }} }
+            - { name: OTEL_SERVICE_NAME, value: {{ $name }} }
+            - { name: OTEL_RESOURCE_ATTRIBUTES, value: "service.namespace=agripulse,deployment.environment.name={{ $.Values.environment }},service.version={{ $.Values.image.tag }}" }
+            - { name: OTEL_TRACES_SAMPLER, value: parentbased_traceidratio }
+            - { name: OTEL_TRACES_SAMPLER_ARG, value: {{ $.Values.telemetry.samplingRatio | quote }} }
+            {{- end }}
+          readinessProbe: { httpGet: { path: /readyz, port: http }, periodSeconds: 10 }
+          livenessProbe: { httpGet: { path: /healthz, port: http }, periodSeconds: 20, initialDelaySeconds: 15 }
+          resources: {{- toYaml .Values.resources | nindent 12 }}
+          securityContext: {{- include "svc.containerSecurity" . | nindent 12 }}
+          volumeMounts:
+            {{- if .Values.secrets }}
+            - { name: secrets, mountPath: /mnt/secrets, readOnly: true }
+            {{- end }}
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        {{- if .Values.secrets }}
+        - name: secrets
+          csi:
+            driver: secrets-store.csi.k8s.io
+            readOnly: true
+            volumeAttributes: { secretProviderClass: {{ $name }}-secrets }
+        {{- end }}
+        - { name: tmp, emptyDir: { sizeLimit: 64Mi } }
+---
+apiVersion: argoproj.io/v1alpha1
+kind: AnalysisTemplate
+metadata:
+  name: canary-health
+  labels: {{- include "svc.labels" . | nindent 4 }}
+spec:
+  args:
+    - name: canary-hash
+  metrics:
+    - name: success-rate
+      interval: 30s
+      count: 4
+      failureLimit: 1
+      # No traffic yet = no result = not a failure
+      successCondition: "len(result) == 0 || result[0] >= {{ .Values.rollout.successRateThreshold }}"
+      provider:
+        prometheus:
+          address: http://kube-prometheus-stack-prometheus.monitoring.svc:9090
+          query: |
+            sum(rate(http_requests_total{namespace="{{ .Release.Namespace }}", rollouts_pod_template_hash="{{ "{{" }}args.canary-hash{{ "}}" }}", status!~"5.."}[2m]))
+            / sum(rate(http_requests_total{namespace="{{ .Release.Namespace }}", rollouts_pod_template_hash="{{ "{{" }}args.canary-hash{{ "}}" }}"}[2m]))
+    - name: latency-p95
+      interval: 30s
+      count: 4
+      failureLimit: 1
+      successCondition: "len(result) == 0 || result[0] <= {{ .Values.rollout.latencyP95Seconds }}"
+      provider:
+        prometheus:
+          address: http://kube-prometheus-stack-prometheus.monitoring.svc:9090
+          query: |
+            histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket{namespace="{{ .Release.Namespace }}", rollouts_pod_template_hash="{{ "{{" }}args.canary-hash{{ "}}" }}"}[2m])))
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  labels:
+    app.kubernetes.io/name: {{ $name }}
+    {{- include "svc.labels" . | nindent 4 }}
+spec:
+  selector: { app.kubernetes.io/name: {{ $name }} }
+  ports: [{ name: http, port: 8080, targetPort: http }]
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ $name }}
+  labels: {{- include "svc.labels" . | nindent 4 }}
+spec:
+  maxUnavailable: 1
+  selector: { matchLabels: { app.kubernetes.io/name: {{ $name }} } }

@@ -3,8 +3,8 @@
 #   - its security group admits HTTPS from CloudFront's origin-facing address ranges only (AWS managed prefix list)
 #   - every listener rule also requires X-Origin-Verify (a secret only CloudFront sends): another CloudFront
 #     distribution, or anyone who finds the ALB, gets a 403
-#   - host-based rules, one target group each: agripulse.<zone> and incidents.<zone> -> oauth2-proxy (Cognito
-#     staff sign-in) in front of each app; argocd.<zone> -> Argo CD and grafana.<zone> -> Grafana (their own
+#   - host-based rules, one target group each: every service in each environment (shop.<zone>, shop.staging.<zone>,
+#     ...: AgriPulse accounts, signed tokens checked by the services), argocd.<zone> and grafana.<zone> (their own
 #     sign-in: Argo CD admin, Grafana admin from Secrets Manager)
 # Terraform owns the ALB, its listener, rules, certificate and target groups. Inside EKS the AWS Load Balancer
 # Controller only keeps each target group filled with pod IPs (TargetGroupBindings: one in each app chart, the
@@ -16,19 +16,13 @@ data "aws_ec2_managed_prefix_list" "cloudfront" {
 }
 
 locals {
-  # Priorities are fixed: a rule whose priority changes is replaced, so new hosts take new numbers
-  alb_apps = {
-    incidents = { host = local.hosts["incidents"], port = 4180, health = "/ping", priority = 10 } # oauth2-proxy
-    web       = { host = local.hosts["web"], port = 4180, health = "/ping", priority = 11 }       # oauth2-proxy
-    argocd    = { host = local.hosts["argocd"], port = 8080, health = "/healthz", priority = 12 } # argocd-server
-    grafana   = { host = local.hosts["grafana"], port = 3000, health = "/api/health", priority = 13 }
-  }
+  alb_apps  = var.alb_routes
   pod_ports = toset([for a in values(local.alb_apps) : tostring(a.port)])
 }
 
 resource "aws_security_group" "alb" {
   name        = "${var.name}-alb"
-  description = "HTTPS from CloudFront only; the ALB reaches only oauth2-proxy pods"
+  description = "HTTPS from CloudFront only; the ALB reaches only the service pods"
   vpc_id      = var.vpc_id
   tags        = { Name = "${var.name}-alb" }
 }
@@ -42,7 +36,7 @@ resource "aws_vpc_security_group_ingress_rule" "alb_from_cloudfront" {
   ip_protocol       = "tcp"
 }
 
-# One rule per pod port: 4180 oauth2-proxy, 8080 argocd-server, 3000 Grafana
+# One rule per pod port: 8080 the services and argocd-server, 3000 Grafana
 resource "aws_vpc_security_group_egress_rule" "alb_to_pods" {
   for_each                     = local.pod_ports
   security_group_id            = aws_security_group.alb.id
@@ -62,17 +56,6 @@ resource "aws_vpc_security_group_ingress_rule" "pods_from_alb" {
   from_port                    = tonumber(each.key)
   to_port                      = tonumber(each.key)
   ip_protocol                  = "tcp"
-}
-
-# The 4180 rules existed before the per-port rules: keep them (a new rule beside the old one would be a duplicate)
-moved {
-  from = aws_vpc_security_group_egress_rule.alb_to_pods
-  to   = aws_vpc_security_group_egress_rule.alb_to_pods["4180"]
-}
-
-moved {
-  from = aws_vpc_security_group_ingress_rule.pods_from_alb
-  to   = aws_vpc_security_group_ingress_rule.pods_from_alb["4180"]
 }
 
 resource "aws_lb" "web" {

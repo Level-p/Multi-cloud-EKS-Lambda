@@ -1,13 +1,16 @@
 # ---------------------------------------------------------------------------
-# Application secrets in AWS Secrets Manager, generated here and never in Git.
-# The pods read them through the Secrets Store CSI driver (AWS provider) with EKS Pod Identity: each app's
-# ServiceAccount may read its own prefix and the shared one only (read_policies below).
+# Application secrets in AWS Secrets Manager, generated here and never in Git, one set per environment.
+# The pods read them through the Secrets Store CSI driver (AWS provider) with EKS Pod Identity: each service's
+# ServiceAccount may read its own secrets and its environment's shared ones only (read_policy_json below).
 #
-#   <name>/web/*         CSRF and cookie secrets of the web app
-#   <name>/incidents/*   CSRF and cookie secrets, alert webhook token of the incident blog
-#   <name>/shared/*      oauth2-proxy's Cognito app client secret (staff sign-in, modules/identity)
-#   <name>/platform/*    Grafana admin password (read by infra/platform); the Slack webhook every alert goes to
-#                        (read by Alertmanager in EKS)
+#   <name>/<env>/accounts/jwt-private-key   signs the sign-in tokens (RS256): the accounts service only
+#   <name>/<env>/shared/jwt-public-key      verifies them: every service
+#   <name>/<env>/<service>/csrf-secret      form tokens of each service
+#   <name>/<env>/shared/internal-token      the shop's calls to the farm service's /internal/ API
+#   <name>/<env>/incidents/webhook-token    Alertmanager's calls to the incident blog
+#   <name>/platform/*                       Grafana admin password, the Slack webhook (every alert and incident report),
+#                                           the mobile gateway header (the Lambda and the WAF rate-limit rule)
+# Staging and production have different keys: a token or cookie of one is useless in the other.
 # The PostgreSQL master password is NOT here: RDS manages it in its own secret (modules/database).
 # recovery_window_in_days = 0: a destroy deletes them at once, so a redeploy can reuse the names.
 # ---------------------------------------------------------------------------
@@ -16,14 +19,17 @@ data "aws_caller_identity" "current" {}
 data "aws_partition" "current" {}
 
 locals {
-  generated = {
-    "web/csrf-secret"                 = 32
-    "web/cookie-secret"               = 32 # oauth2-proxy cookie secret: 16, 24 or 32 bytes
-    "incidents/csrf-secret"           = 32
-    "incidents/cookie-secret"         = 32
-    "incidents/webhook-token"         = 40
-    "platform/grafana-admin-password" = 32
-  }
+  generated = merge(
+    { for p in setproduct(var.environments, var.services) : "${p[0]}/${p[1]}/csrf-secret" => 48 },
+    { for e in var.environments : "${e}/shared/internal-token" => 48 },
+    { for e in var.environments : "${e}/incidents/webhook-token" => 40 },
+    { "platform/grafana-admin-password" = 32, "platform/mobile-gateway-secret" = 48 },
+  )
+  key_pairs = merge(
+    { for e in var.environments : "${e}/accounts/jwt-private-key" => tls_private_key.jwt[e].private_key_pem },
+    { for e in var.environments : "${e}/shared/jwt-public-key" => tls_private_key.jwt[e].public_key_pem },
+  )
+  secret_arn = "arn:${data.aws_partition.current.partition}:secretsmanager:${var.region}:${data.aws_caller_identity.current.account_id}:secret:${var.name}"
 }
 
 resource "random_password" "this" {
@@ -44,14 +50,23 @@ resource "aws_secretsmanager_secret_version" "generated" {
   secret_string = random_password.this[each.key].result
 }
 
-resource "aws_secretsmanager_secret" "oauth2_client_secret" {
-  name                    = "${var.name}/shared/oauth2-client-secret"
+# The token-signing key of each environment (accounts signs, everybody verifies)
+resource "tls_private_key" "jwt" {
+  for_each  = toset(var.environments)
+  algorithm = "RSA"
+  rsa_bits  = 2048
+}
+
+resource "aws_secretsmanager_secret" "keys" {
+  for_each                = toset(keys(local.key_pairs))
+  name                    = "${var.name}/${each.key}"
   recovery_window_in_days = 0
 }
 
-resource "aws_secretsmanager_secret_version" "oauth2_client_secret" {
-  secret_id     = aws_secretsmanager_secret.oauth2_client_secret.id
-  secret_string = var.oauth2_client_secret
+resource "aws_secretsmanager_secret_version" "keys" {
+  for_each      = toset(keys(local.key_pairs))
+  secret_id     = aws_secretsmanager_secret.keys[each.key].id
+  secret_string = local.key_pairs[each.key]
 }
 
 # The one alert channel: Slack (value from the GitHub secret SLACK_WEBHOOK_URL)
@@ -65,13 +80,15 @@ resource "aws_secretsmanager_secret_version" "slack_webhook" {
   secret_string = var.slack_webhook_url
 }
 
+# What each service in each environment may read: its own secrets and its environment's shared ones
+# (the incident blog also reads the Slack webhook: it reports every incident there)
 data "aws_iam_policy_document" "read" {
-  for_each = toset(["web", "incidents"])
+  for_each = { for p in setproduct(var.services, var.environments) : "${p[0]}-${p[1]}" => { service = p[0], env = p[1] } }
   statement {
     actions = ["secretsmanager:GetSecretValue", "secretsmanager:DescribeSecret"]
-    resources = [
-      "arn:${data.aws_partition.current.partition}:secretsmanager:${var.region}:${data.aws_caller_identity.current.account_id}:secret:${var.name}/${each.key}/*",
-      "arn:${data.aws_partition.current.partition}:secretsmanager:${var.region}:${data.aws_caller_identity.current.account_id}:secret:${var.name}/shared/*",
-    ]
+    resources = concat(
+      ["${local.secret_arn}/${each.value.env}/${each.value.service}/*", "${local.secret_arn}/${each.value.env}/shared/*"],
+      each.value.service == "incidents" ? ["${local.secret_arn}/platform/slack-webhook-url-*"] : [],
+    )
   }
 }

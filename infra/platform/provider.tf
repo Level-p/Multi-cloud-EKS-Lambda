@@ -52,6 +52,7 @@ terraform {
     helm       = { source = "hashicorp/helm", version = "~> 3.0" }
     kubernetes = { source = "hashicorp/kubernetes", version = "~> 3.0" }
     random     = { source = "hashicorp/random", version = "~> 3.6" }
+    http       = { source = "hashicorp/http", version = "~> 3.4" } # the RDS CA bundle (modules/k8s-database)
   }
 
   backend "s3" {

@@ -1,35 +1,43 @@
 # ---------------------------------------------------------------------------
-# GitOps: Argo CD syncs gitops/charts/<app> from this repository into EKS; the pipelines only commit image
-# tags. Argo Rollouts runs the web app's canary with automated Prometheus analysis (AIOps deployment gate).
-# Also here: the app namespaces (Pod Security "restricted") and the Redis cache's password.
+# GitOps: Argo CD syncs every service into its own namespace, in staging and in production, from this repository:
+#   gitops/charts/agripulse-service           the one chart all services use
+#   gitops/services/<service>/values.yaml     what the service is (secrets, settings, Redis, alerts)
+#   gitops/services/<service>/<env>.yaml      the image of that environment (the pipelines write only this)
+#   + valuesObject below                      what only Terraform knows (hosts, target group, database, URLs)
+# Argo Rollouts runs every service's canary with automated Prometheus analysis (the AIOps deployment gate).
+# Also here: the 8 namespaces (Pod Security "restricted") and the Redis passwords of the shop's caches.
 # ---------------------------------------------------------------------------
 
 resource "kubernetes_namespace_v1" "apps" {
-  for_each = toset(values(var.app_namespaces))
+  for_each = var.deployments
   metadata {
-    name = each.value
+    name = each.key
     labels = {
       "app.kubernetes.io/part-of"          = "agripulse"
+      "agripulse.io/service"               = each.value.service
+      "agripulse.io/environment"           = each.value.environment
       "pod-security.kubernetes.io/enforce" = "restricted"
       "pod-security.kubernetes.io/audit"   = "restricted"
     }
   }
 }
 
-# ---------------- Redis cache (Valkey) inside EKS: its password ----------------
-# The cache runs in the cluster (gitops/charts/agripulse-web/templates/redis.yaml). Terraform creates its
-# password as a Kubernetes Secret, read by Valkey and by the web pods; never in Git.
+# ---------------- Redis caches (Valkey) inside EKS: their passwords ----------------
+# Services with redis.enabled (the shop) run Valkey in their own namespace (gitops/charts/agripulse-service/
+# templates/redis.yaml). Terraform creates its password as a Kubernetes Secret "<service>-redis"; never in Git.
 resource "random_password" "redis" {
-  length  = 40
-  special = false
+  for_each = toset(var.redis_deployments)
+  length   = 40
+  special  = false
 }
 
 resource "kubernetes_secret_v1" "redis" {
+  for_each = toset(var.redis_deployments)
   metadata {
-    name      = "agripulse-redis"
-    namespace = kubernetes_namespace_v1.apps["agripulse"].metadata[0].name
+    name      = "${var.deployments[each.key].service}-redis"
+    namespace = kubernetes_namespace_v1.apps[each.key].metadata[0].name
   }
-  data = { password = random_password.redis.result }
+  data = { password = random_password.redis[each.key].result }
 }
 
 # ---------------- progressive delivery ----------------
@@ -69,20 +77,6 @@ resource "kubernetes_secret_v1" "repo" {
   depends_on = [helm_release.argocd]
 }
 
-locals {
-  # Merged over each chart's values.yaml by Helm: values only Terraform knows (the pipeline changes image.tag only)
-  app_values = {
-    agripulse-web = merge(var.common_values, var.app_values["agripulse-web"], {
-      aws = merge(var.common_values.aws, var.app_values["agripulse-web"].aws)
-      db  = merge(var.common_values.db, var.app_values["agripulse-web"].db)
-    })
-    incident-blog = merge(var.common_values, var.app_values["incident-blog"], {
-      aws = merge(var.common_values.aws, var.app_values["incident-blog"].aws)
-      db  = merge(var.common_values.db, var.app_values["incident-blog"].db)
-    })
-  }
-}
-
 resource "helm_release" "argocd_apps" {
   name       = "argocd-apps"
   repository = "https://argoproj.github.io/argo-helm"
@@ -94,24 +88,28 @@ resource "helm_release" "argocd_apps" {
     projects = {
       agripulse = {
         namespace                  = "argocd"
-        description                = "AgriPulse web and incident blog"
+        description                = "AgriPulse microservices, staging and production"
         sourceRepos                = [var.git_repo_url]
-        destinations               = [for ns in values(var.app_namespaces) : { server = "https://kubernetes.default.svc", namespace = ns }]
+        destinations               = [for ns in keys(var.deployments) : { server = "https://kubernetes.default.svc", namespace = ns }]
         clusterResourceWhitelist   = []
         namespaceResourceWhitelist = [{ group = "*", kind = "*" }]
       }
     }
-    applications = { for app, ns in var.app_namespaces : app => {
+    # One Application per service and environment, named like its namespace: shop-staging, shop-production...
+    applications = { for k, d in var.deployments : k => {
       namespace  = "argocd"
       project    = "agripulse"
       finalizers = ["resources-finalizer.argocd.argoproj.io"]
       source = {
         repoURL        = var.git_repo_url
         targetRevision = var.git_revision
-        path           = "gitops/charts/${app}"
-        helm           = { valueFiles = ["values.yaml"], valuesObject = local.app_values[app] }
+        path           = "gitops/charts/agripulse-service"
+        helm = {
+          valueFiles   = ["../../services/${d.service}/values.yaml", "../../services/${d.service}/${d.environment}.yaml"]
+          valuesObject = d.values
+        }
       }
-      destination = { server = "https://kubernetes.default.svc", namespace = ns }
+      destination = { server = "https://kubernetes.default.svc", namespace = k }
       syncPolicy = {
         automated   = { prune = true, selfHeal = true }
         syncOptions = ["CreateNamespace=false"]

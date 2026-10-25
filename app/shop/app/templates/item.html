@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block title %}{{ item.title }} · AgriPulse{% endblock %}
+{% block content %}
+<div class="card">
+  {% if item.image_url %}<img class="hero" src="{{ item.image_url }}" alt="{{ item.title }}">{% endif %}
+  <h1>{{ item.title }}</h1>
+  <p class="price">{{ "%.2f"|format(item.price) }} {{ item.currency }} / {{ item.unit }}</p>
+  <p>{{ item.quantity }} {{ item.unit }} available · <span class="tag">{{ item.kind }}</span> {{ item.category }}</p>
+  {% if item.description %}<p>{{ item.description }}</p>{% endif %}
+  {% if item.farm %}<p>From <a href="{{ env.farm_url }}/farms/{{ item.farm.owner_id }}">{{ item.farm.farm_name }}</a> ({{ item.farm.region }})</p>{% endif %}
+  {% if me and me.role in ("buyer", "farmer") %}
+  <form method="post" action="/cart" class="inline">
+    <input type="hidden" name="csrf" value="{{ csrf_token(request) }}">
+    <input type="hidden" name="listing_id" value="{{ item.id }}">
+    <label>Quantity ({{ item.unit }}) <input name="quantity" type="number" step="any" min="0.01" max="{{ item.quantity }}" value="1" required></label>
+    <button type="submit">Add to cart</button>
+  </form>
+  {% elif not me %}
+  <p><a class="button" href="{{ env.accounts_url }}/login?next={{ (env.shop_url ~ '/items/' ~ item.id)|urlencode }}">Sign in to buy</a></p>
+  {% endif %}
+</div>
+{% endblock %}

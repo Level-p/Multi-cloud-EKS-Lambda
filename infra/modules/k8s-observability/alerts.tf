@@ -18,6 +18,8 @@ locals {
 
   # 3-sigma anomaly of an expression against its own last 7 days (a subquery, so it also works on aggregations)
   anomaly = "> (avg_over_time((%s)[7d:5m]) + 3 * stddev_over_time((%s)[7d:5m]))"
+  # the span metrics' k8s_namespace_name (<service>-<environment>) as "namespace": staging alerts only go to Slack
+  ns = "label_replace(%s, \"namespace\", \"$1\", \"k8s_namespace_name\", \"(.*)\")"
 
   alert_rules = {
     agripulse-opentelemetry = {
@@ -27,38 +29,40 @@ locals {
           {
             alert       = "AgriPulseServiceErrorRate"
             expr        = <<-EOT
-              sum by (service) (rate(traces_spanmetrics_calls_total{span_kind="SPAN_KIND_SERVER", status_code="STATUS_CODE_ERROR"}[5m]))
-                / clamp_min(sum by (service) (rate(traces_spanmetrics_calls_total{span_kind="SPAN_KIND_SERVER"}[5m])), 1e-6) > 0.05
+              label_replace(
+                sum by (service, k8s_namespace_name) (rate(traces_spanmetrics_calls_total{span_kind="SPAN_KIND_SERVER", status_code="STATUS_CODE_ERROR"}[5m]))
+                  / clamp_min(sum by (service, k8s_namespace_name) (rate(traces_spanmetrics_calls_total{span_kind="SPAN_KIND_SERVER"}[5m])), 1e-6) > 0.05,
+                "namespace", "$1", "k8s_namespace_name", "(.*)")
             EOT
             for         = "5m"
-            labels      = { severity = "critical", namespace = "opentelemetry" }
-            annotations = { summary = "{{ $labels.service }}: {{ $value | humanizePercentage }} of requests fail (OpenTelemetry traces). Grafana > Tempo: search status=error for this service." }
+            labels      = { severity = "critical" }
+            annotations = { summary = "{{ $labels.service }} ({{ $labels.namespace }}): {{ $value | humanizePercentage }} of requests fail (OpenTelemetry traces). Grafana > Tempo: search status=error for this service." }
           },
           {
             alert       = "AgriPulseServiceSlow"
-            expr        = "histogram_quantile(0.95, sum by (le, service) (rate(traces_spanmetrics_latency_bucket{span_kind=\"SPAN_KIND_SERVER\"}[5m]))) > 1"
+            expr        = format("%s > 1", format(local.ns, "histogram_quantile(0.95, sum by (le, service, k8s_namespace_name) (rate(traces_spanmetrics_latency_bucket{span_kind=\"SPAN_KIND_SERVER\"}[5m])))"))
             for         = "10m"
-            labels      = { severity = "warning", namespace = "opentelemetry" }
-            annotations = { summary = "{{ $labels.service }}: p95 request latency {{ $value | humanizeDuration }} (OpenTelemetry traces); open a slow trace in Grafana from the latency panel." }
+            labels      = { severity = "warning" }
+            annotations = { summary = "{{ $labels.service }} ({{ $labels.namespace }}): p95 request latency {{ $value | humanizeDuration }} (OpenTelemetry traces); open a slow trace in Grafana from the latency panel." }
           },
           {
             # Client spans: the apps' calls to PostgreSQL (SQLAlchemy) and Valkey (Redis)
             alert       = "AgriPulseDependencySlow"
-            expr        = "histogram_quantile(0.95, sum by (le, service, span_name) (rate(traces_spanmetrics_latency_bucket{span_kind=\"SPAN_KIND_CLIENT\"}[5m]))) > 0.5"
+            expr        = format("%s > 0.5", format(local.ns, "histogram_quantile(0.95, sum by (le, service, span_name, k8s_namespace_name) (rate(traces_spanmetrics_latency_bucket{span_kind=\"SPAN_KIND_CLIENT\"}[5m])))"))
             for         = "10m"
-            labels      = { severity = "warning", namespace = "opentelemetry" }
-            annotations = { summary = "{{ $labels.service }}: p95 of '{{ $labels.span_name }}' is {{ $value | humanizeDuration }} (database or cache call)." }
+            labels      = { severity = "warning" }
+            annotations = { summary = "{{ $labels.service }} ({{ $labels.namespace }}): p95 of '{{ $labels.span_name }}' is {{ $value | humanizeDuration }} (database, cache or service call)." }
           },
           {
             alert       = "AgriPulseLatencyAnomaly"
             expr        = format("service:request_p95:10m %s and service:request_p95:10m > 0.3", format(local.anomaly, "service:request_p95:10m", "service:request_p95:10m"))
             for         = "15m"
-            labels      = { severity = "warning", namespace = "opentelemetry" }
-            annotations = { summary = "{{ $labels.service }}: p95 latency is far above its usual level for the last 7 days (AIOps anomaly)." }
+            labels      = { severity = "warning" }
+            annotations = { summary = "{{ $labels.service }} ({{ $labels.namespace }}): p95 latency is far above its usual level for the last 7 days (AIOps anomaly)." }
           },
           {
             record = "service:request_p95:10m"
-            expr   = "histogram_quantile(0.95, sum by (le, service) (rate(traces_spanmetrics_latency_bucket{span_kind=\"SPAN_KIND_SERVER\"}[10m])))"
+            expr   = format(local.ns, "histogram_quantile(0.95, sum by (le, service, k8s_namespace_name) (rate(traces_spanmetrics_latency_bucket{span_kind=\"SPAN_KIND_SERVER\"}[10m])))")
           },
           {
             alert       = "AgriPulseTelemetryMissing"
@@ -89,7 +93,7 @@ locals {
             expr        = "min by (dimension_TargetGroup) (aws_applicationelb_healthy_host_count_minimum) < 1"
             for         = "10m"
             labels      = merge(local.aws, { severity = "critical" })
-            annotations = { summary = "No healthy oauth2-proxy pod in {{ $labels.dimension_TargetGroup }}: the site is down." }
+            annotations = { summary = "No healthy pod in {{ $labels.dimension_TargetGroup }}: that site is down." }
           },
           {
             alert       = "AgriPulseAlbLatencyAnomaly"

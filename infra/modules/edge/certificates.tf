@@ -1,14 +1,13 @@
 # ---------------------------------------------------------------------------
 # DNS names on the Route 53 zone, with ACM certificates that Route 53 validates and ACM renews:
 #
-#   https://agripulse.<zone>  -> CloudFront "app"   -> ALB -> EKS (oauth2-proxy -> agripulse-web)
-#   https://incidents.<zone>  -> CloudFront "app"   -> ALB -> EKS (oauth2-proxy -> incident-blog)
-#   https://argocd.<zone>     -> CloudFront "app"   -> ALB -> EKS (Argo CD, its own sign-in)
-#   https://grafana.<zone>    -> CloudFront "app"   -> ALB -> EKS (Grafana, its own sign-in)
+#   https://<service>.<zone>          -> CloudFront "app" -> ALB -> EKS, production (accounts, farm, shop, incidents)
+#   https://<service>.staging.<zone>  -> CloudFront "app" -> ALB -> EKS, staging
+#   https://argocd.<zone>, grafana.<zone> -> CloudFront "app" -> ALB -> EKS (their own sign-in)
 #   https://api.<zone>        -> CloudFront "api"   -> API Gateway -> Lambda
 #   https://media.<zone>      -> CloudFront "media" -> S3 (static images: catalog + clean uploads)
 #
-# CloudFront's certificate must be in us-east-1 (all six names); the ALB's is regional (the four ALB names,
+# CloudFront's certificate must be in us-east-1 (every name); the ALB's is regional (the ALB names,
 # which CloudFront checks because it forwards the viewer's Host header to the ALB).
 # ---------------------------------------------------------------------------
 
@@ -18,13 +17,14 @@ data "aws_route53_zone" "this" {
 }
 
 locals {
-  hosts = { for k, sub in var.subdomains : k => "${sub}.${var.dns_zone_name}" }
+  alb_hosts = sort([for r in values(var.alb_routes) : r.host])
+  hosts     = merge({ for k, r in var.alb_routes : k => r.host }, { api = var.api_host, media = var.media_host })
 }
 
 resource "aws_acm_certificate" "cloudfront" {
   provider                  = aws.us_east_1
-  domain_name               = local.hosts["web"]
-  subject_alternative_names = [for k in ["incidents", "api", "media", "argocd", "grafana"] : local.hosts[k]]
+  domain_name               = var.api_host
+  subject_alternative_names = concat([var.media_host], local.alb_hosts)
   validation_method         = "DNS"
   lifecycle {
     create_before_destroy = true
@@ -32,8 +32,8 @@ resource "aws_acm_certificate" "cloudfront" {
 }
 
 resource "aws_acm_certificate" "alb" {
-  domain_name               = local.hosts["web"]
-  subject_alternative_names = [for k in ["incidents", "argocd", "grafana"] : local.hosts[k]]
+  domain_name               = local.alb_hosts[0]
+  subject_alternative_names = slice(local.alb_hosts, 1, length(local.alb_hosts))
   validation_method         = "DNS"
   lifecycle {
     create_before_destroy = true

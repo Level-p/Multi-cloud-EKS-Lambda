@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block title %}AgriPulse · fresh from the farm{% endblock %}
+{% block content %}
+<h1>Fresh from the farm</h1>
+<form method="get" action="/" class="inline card">
+  <input name="q" value="{{ q }}" maxlength="60" placeholder="Tomatoes, yam, eggs, seedlings..." aria-label="Search">
+  <select name="kind" aria-label="Type">
+    <option value="">Everything</option>
+    <option value="produce" {% if kind == "produce" %}selected{% endif %}>Produce</option>
+    <option value="resource" {% if kind == "resource" %}selected{% endif %}>Farm resources</option>
+  </select>
+  <button type="submit">Search</button>
+</form>
+{% if error %}<p class="error">{{ error }}</p>{% endif %}
+<div class="grid">
+{% for i in items %}
+  <a class="item" href="/items/{{ i.id }}">
+    {% if i.image_url %}<img src="{{ i.image_url }}" alt="{{ i.title }}">{% endif %}
+    <strong>{{ i.title }}</strong>
+    <span class="price">{{ "%.2f"|format(i.price) }} {{ i.currency }} / {{ i.unit }}</span>
+    <span class="muted">{{ i.farm.farm_name }} · {{ i.farm.region }}</span>
+    <span class="tag">{{ i.kind }}</span>
+  </a>
+{% else %}
+  {% if not error %}<p>Nothing matches yet. Farmers are adding produce every day.</p>{% endif %}
+{% endfor %}
+</div>
+{% endblock %}

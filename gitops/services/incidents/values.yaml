@@ -1,0 +1,13 @@
+# incidents: the operations team's incident blog; every new incident is reported to Slack
+service: incidents
+image: { repository: agripulse/incidents }
+secrets:
+  - { env: JWT_PUBLIC_KEY, secret: shared/jwt-public-key }
+  - { env: CSRF_SECRET, secret: incidents/csrf-secret }
+  - { env: WEBHOOK_TOKEN, secret: incidents/webhook-token }      # Alertmanager's calls
+  - { env: SLACK_WEBHOOK_URL, secret: /platform/slack-webhook-url }   # the one alert channel, all environments
+alerts:
+  - alert: AgriPulseIncidentReportNotSent
+    expr: increase(agripulse_slack_posts_total{namespace="NAMESPACE", result="error"}[15m]) > 0
+    severity: warning
+    summary: an incident report could not be posted to Slack (check the webhook in Secrets Manager)

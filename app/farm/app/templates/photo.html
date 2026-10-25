@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block title %}Photo · AgriPulse{% endblock %}
+{% block content %}
+<div class="card">
+  <h1>Photo for {{ item.title }}</h1>
+  <p class="muted">JPEG, PNG or WebP, up to 5 MB. Every upload is scanned for malware and appears in the shop once it is clean.</p>
+  <form method="post" action="{{ upload.url }}" enctype="multipart/form-data" class="stack">
+    {% for k, v in upload.fields.items() %}<input type="hidden" name="{{ k }}" value="{{ v }}">{% endfor %}
+    <label>Photo type
+      <select name="Content-Type"><option value="image/jpeg">JPEG</option><option value="image/png">PNG</option><option value="image/webp">WebP</option></select>
+    </label>
+    <label>Photo <input type="file" name="file" accept="image/jpeg,image/png,image/webp" required></label>
+    <button type="submit">Upload</button>
+  </form>
+  <p><a href="/dashboard">Back</a></p>
+</div>
+{% endblock %}

@@ -14,11 +14,6 @@ variable "dns_zone_name" {
   default     = "mfon21.space"
 }
 
-variable "subdomains" {
-  type    = map(string)
-  default = { web = "agripulse", incidents = "incidents", api = "api", media = "media", argocd = "argocd", grafana = "grafana" }
-}
-
 variable "az_count" {
   description = "Availability zones (2: EKS nodes and the RDS primary/standby spread over two zones)"
   type        = number
@@ -79,7 +74,7 @@ variable "slack_webhook_url" {
 }
 
 variable "deletion_protection" {
-  description = "Protect the database (final snapshot), the ALB, the Cognito pools, the ECR images and the media files from deletion"
+  description = "Protect the database (final snapshot), the ALB, the ECR images and the media files from deletion"
   type        = bool
   default     = false
 }

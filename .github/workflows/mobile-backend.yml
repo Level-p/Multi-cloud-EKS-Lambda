@@ -1,10 +1,10 @@
 # ---------------------------------------------------------------------------
-# AgriPulse mobile backend -> AWS Lambda behind API Gateway, behind CloudFront + AWS WAF (https://api.<zone>)
-#   test             pytest (SQLite for PostgreSQL, moto for S3, real API Gateway proxy events)
+# AgriPulse mobile backend -> AWS Lambda behind API Gateway, behind CloudFront + AWS WAF (https://api.<zone>):
+# the mobile app's gateway to the production services (accounts, farm, shop)
+#   test             pytest (real API Gateway proxy events, a local stand-in for the services)
 #   security         Gitleaks, Semgrep (+ AI-code rules), pip-audit, Checkov on the Lambda/API module
 #   dast             OWASP ZAP full scan of the real handler behind a local API Gateway stand-in
-#   package          Linux wheels for Python 3.12 (x86_64), hash-verified, + the code + the RDS CA bundle
-#                    (checksum-verified), zipped
+#   package          the code, zipped (standard library only: nothing else to package)
 #   deploy           approval (environment agripulse-production), then canary: new version smoke-tested,
 #                    10 % for 5 min (errors of the new version), then 100 % or automatic rollback
 #                    (.github/scripts/lambda_canary.sh)                                    (main only)
@@ -39,7 +39,6 @@ concurrency:
 
 env:
   AWS_REGION: eu-west-2
-  RDS_CA_SHA256: 90a6f1a7978a1b1b096dca6c57511ca48d3b8cf052f8e704baf358f34ea2f21b   # same pin as the Dockerfiles
 
 jobs:
   test:
@@ -87,13 +86,11 @@ jobs:
         run: |
           set -euo pipefail
           rm -rf build && mkdir build
-          # Wheels for the Lambda runtime (Amazon Linux, x86_64, CPython 3.12), exact hashes only
-          python -m pip install --quiet --require-hashes -r requirements.txt --target build \
-            --platform manylinux2014_x86_64 --implementation cp --python-version 3.12 --only-binary=:all:
+          # The gateway uses the Python standard library only: requirements.txt holds no package on purpose
+          if grep -qvE '^[[:space:]]*(#.*)?$' requirements.txt; then
+            echo "::error::requirements.txt now lists packages: package their wheels here too"; exit 1
+          fi
           cp -r agripulse_mobile build/
-          # The RDS CA bundle (DB_SSLROOTCERT=global-bundle.pem): PostgreSQL's certificate is verified against it
-          curl -sSfLo build/global-bundle.pem https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem
-          echo "$RDS_CA_SHA256  build/global-bundle.pem" | sha256sum -c -
           (cd build && zip -q -r ../mobile-backend.zip .)
           ls -lh mobile-backend.zip
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -126,6 +123,8 @@ jobs:
 
       - name: Canary deploy with automated rollback
         run: |
+          # the script's AWS CLI arguments are checked before it publishes anything
+          python3 -m pip install --quiet pytest==9.1.1 && python3 -m pytest -q .github/scripts/test_lambda_canary.py
           BAKE_MINUTES=5 CANARY_WEIGHT=0.1 \
             bash .github/scripts/lambda_canary.sh "$TF_OUT_LAMBDA_FUNCTION_NAME" dist/mobile-backend.zip
 

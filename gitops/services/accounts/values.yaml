@@ -1,0 +1,14 @@
+# accounts: sign-up and sign-in for farmers and buyers; the only holder of the token-signing key
+service: accounts
+image: { repository: agripulse/accounts }
+secrets:
+  - { env: JWT_PRIVATE_KEY, secret: accounts/jwt-private-key }   # signs the tokens: this service only
+  - { env: JWT_PUBLIC_KEY, secret: shared/jwt-public-key }
+  - { env: CSRF_SECRET, secret: accounts/csrf-secret }
+alerts:
+  # Many wrong passwords: credential stuffing (AWS WAF rate-limits per IP; this sees it across IPs)
+  - alert: AgriPulseSignInFailuresHigh
+    expr: sum(rate(agripulse_logins_total{namespace="NAMESPACE", result=~"wrong-password|unknown|locked"}[10m])) > 1
+    for: 10m
+    severity: warning
+    summary: more than one failed sign-in per second for 10 minutes (credential stuffing?)

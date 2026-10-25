@@ -1,0 +1,16 @@
+# farm: farmers' profiles, listings (produce and farm resources) and farm records; the stock the shop reserves
+service: farm
+image: { repository: agripulse/farm }
+secrets:
+  - { env: JWT_PUBLIC_KEY, secret: shared/jwt-public-key }
+  - { env: CSRF_SECRET, secret: farm/csrf-secret }
+  - { env: INTERNAL_TOKEN, secret: shared/internal-token }      # the shop's calls to /internal/
+env:
+  CURRENCY: NGN
+internalCallers: [shop]          # the shop reserves and releases stock
+alerts:
+  - alert: AgriPulseStockReservationsFailing
+    expr: sum(rate(agripulse_stock_reservations_total{namespace="NAMESPACE", result="insufficient"}[15m])) > 0.2
+    for: 15m
+    severity: info
+    summary: many orders find too little stock (listings out of date?)

@@ -1,0 +1,15 @@
+# shop: the catalog (from the farm service, cached), carts and orders; Redis (Valkey) in its own namespace
+service: shop
+image: { repository: agripulse/shop }
+secrets:
+  - { env: JWT_PUBLIC_KEY, secret: shared/jwt-public-key }
+  - { env: CSRF_SECRET, secret: shop/csrf-secret }
+  - { env: INTERNAL_TOKEN, secret: shared/internal-token }      # its calls to the farm service's /internal/
+redis:
+  enabled: true
+alerts:
+  - alert: AgriPulseOrdersFailing
+    expr: sum(rate(agripulse_orders_total{namespace="NAMESPACE", result=~"error|not-reserved"}[10m])) / clamp_min(sum(rate(agripulse_orders_total{namespace="NAMESPACE"}[10m])), 1e-6) > 0.2
+    for: 10m
+    severity: critical
+    summary: more than 20% of checkouts fail

@@ -1,72 +1,93 @@
 openapi: 3.0.3
-# AgriPulse mobile API (CloudFront -> API Gateway REST -> Lambda). Cognito authorizer on every route but /health.
-# Keep in step with app/mobile-backend/agripulse_mobile/api.py (the Pydantic models are the truth).
-# FIELD_ID_PLACEHOLDER is replaced with a field created just before the scan.
+# AgriPulse mobile API (CloudFront -> API Gateway REST -> the gateway Lambda -> the services).
+# Keep in step with ROUTES in app/mobile-backend/agripulse_mobile/api.py. The services check the bearer token.
 info:
   title: AgriPulse mobile API
-  version: "1.0"
+  version: "2.0"
 security:
-  - cognito: []
+  - bearer: []
 components:
   securitySchemes:
-    cognito: { type: http, scheme: bearer, bearerFormat: JWT }
+    bearer: { type: http, scheme: bearer, bearerFormat: JWT }
   parameters:
-    FieldId:
-      name: field_id
+    Id:
+      name: id
       in: path
       required: true
-      schema: { type: string, example: FIELD_ID_PLACEHOLDER }
+      schema: { type: integer, example: 1 }
+  schemas:
+    Credentials:
+      type: object
+      required: [email, password]
+      properties: { email: { type: string, example: dast@example.com }, password: { type: string, example: dast-password-1 } }
+    Order:
+      type: object
+      required: [items, delivery_address, phone]
+      properties:
+        items: { type: array, items: { type: object, properties: { listing_id: { type: integer, example: 1 }, quantity: { type: number, example: 1 } } } }
+        delivery_address: { type: string, example: "1 DAST Road, Ibadan" }
+        phone: { type: string, example: "+234 800 000 0000" }
+    Any:
+      type: object
+      additionalProperties: true
 paths:
   /health:
+    get: { security: [], responses: { "200": { description: alive } } }
+  /auth/register:
+    post:
+      security: []
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/Any" } } } }
+      responses: { "201": { description: account and token } }
+  /auth/token:
+    post:
+      security: []
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/Credentials" } } } }
+      responses: { "200": { description: token } }
+  /me:
+    get: { responses: { "200": { description: the caller } } }
+  /catalog:
     get:
       security: []
-      responses: { "200": { description: alive } }
-  /fields:
-    get:
-      responses: { "200": { description: the caller's fields } }
+      parameters:
+        - { name: q, in: query, schema: { type: string, example: tomato } }
+        - { name: kind, in: query, schema: { type: string, enum: [produce, resource] } }
+      responses: { "200": { description: what is for sale } }
+  /items/{id}:
+    get: { security: [], parameters: [{ $ref: "#/components/parameters/Id" }], responses: { "200": { description: one item } } }
+  /orders:
+    get: { responses: { "200": { description: my orders } } }
     post:
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [name, crop, area_ha, latitude, longitude]
-              properties:
-                name: { type: string, maxLength: 80, example: North plot }
-                crop: { type: string, example: maize }
-                area_ha: { type: number, example: 12.5 }
-                latitude: { type: number, example: 6.45 }
-                longitude: { type: number, example: 3.39 }
-      responses: { "201": { description: created }, "422": { description: invalid } }
-  /fields/{field_id}/observations:
-    parameters: [{ $ref: "#/components/parameters/FieldId" }]
-    get:
-      responses: { "200": { description: observations }, "404": { description: not the caller's field } }
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/Order" } } } }
+      responses: { "201": { description: one order per farm } }
+  /orders/{id}/cancel:
+    post: { parameters: [{ $ref: "#/components/parameters/Id" }], responses: { "200": { description: cancelled } } }
+  /sales:
+    get: { responses: { "200": { description: orders for my farm } } }
+  /sales/{id}/status:
     post:
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [growth_stage, issue]
-              properties:
-                growth_stage: { type: string, enum: [planting, emergence, vegetative, flowering, fruiting, harvest], example: vegetative }
-                issue: { type: string, enum: [none, pest, disease, drought, flood, nutrient], example: pest }
-                note: { type: string, maxLength: 2000, example: Fall armyworm on the east edge }
-                media_keys: { type: array, maxItems: 5, items: { type: string }, example: [] }
-      responses: { "201": { description: created }, "422": { description: invalid } }
-  /media/upload-url:
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/Any" } } } }
+      responses: { "200": { description: new status } }
+  /farm/profile:
+    get: { responses: { "200": { description: my farm } } }
+    put:
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/Any" } } } }
+      responses: { "200": { description: saved } }
+  /farm/listings:
+    get: { responses: { "200": { description: my listings } } }
     post:
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [content_type, size_bytes]
-              properties:
-                content_type: { type: string, example: image/jpeg }
-                size_bytes: { type: integer, example: 250000 }
-      responses: { "200": { description: presigned POST for S3 } }
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/Any" } } } }
+      responses: { "201": { description: listed } }
+  /farm/listings/{id}:
+    patch:
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/Any" } } } }
+      responses: { "200": { description: changed } }
+    delete: { parameters: [{ $ref: "#/components/parameters/Id" }], responses: { "204": { description: hidden } } }
+  /farm/listings/{id}/photo:
+    post: { parameters: [{ $ref: "#/components/parameters/Id" }], responses: { "200": { description: pre-signed upload } } }
+  /farm/activities:
+    get: { responses: { "200": { description: my farm records } } }
+    post:
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/Any" } } } }
+      responses: { "201": { description: recorded } }

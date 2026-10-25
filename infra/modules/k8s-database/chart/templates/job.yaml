@@ -1,0 +1,86 @@
+# The master password never leaves Secrets Manager and this pod: the CSI driver mounts it with this ServiceAccount's
+# EKS Pod Identity role (read access to the master secret only), psql reads it from the file.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: db-bootstrap
+---
+apiVersion: secrets-store.csi.x-k8s.io/v1
+kind: SecretProviderClass
+metadata:
+  name: db-master
+spec:
+  provider: aws
+  parameters:
+    usePodIdentity: "true"
+    region: {{ .Values.region | quote }}
+    objects: |
+      - objectName: {{ .Values.masterSecretArn | quote }}
+        objectType: secretsmanager
+        jmesPath:
+          - { path: username, objectAlias: username }
+          - { path: password, objectAlias: password }
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: db-bootstrap
+data:
+  bootstrap.sql: {{ .Values.sql | quote }}
+  global-bundle.pem: {{ .Values.caBundle | quote }}
+---
+# A Helm hook: it runs after the ServiceAccount, SecretProviderClass and ConfigMap exist, on every install and upgrade
+# (an upgrade happens whenever the list of databases changes), and Helm (so Terraform) waits until it succeeded.
+# The previous run is deleted only when the next one starts: its logs stay readable.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: db-bootstrap
+  annotations:
+    helm.sh/hook: post-install,post-upgrade
+    helm.sh/hook-delete-policy: before-hook-creation
+    agripulse.io/sql-sha256: {{ .Values.sql | sha256sum | quote }}
+spec:
+  backoffLimit: 4
+  activeDeadlineSeconds: 600
+  template:
+    spec:
+      serviceAccountName: db-bootstrap
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 70           # "postgres" in the official Alpine image
+        runAsGroup: 70
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: psql
+          image: {{ .Values.image | quote }}
+          command: ["sh", "-c"]
+          args:
+            - >-
+              export PGUSER="$(cat /mnt/secrets/username)" PGPASSWORD="$(cat /mnt/secrets/password)";
+              psql "host=$DB_HOST port=$DB_PORT dbname=postgres sslmode=verify-full sslrootcert=/bootstrap/global-bundle.pem connect_timeout=10"
+              -X -q -v ON_ERROR_STOP=1 -v master="$PGUSER" -f /bootstrap/bootstrap.sql
+          env:
+            - { name: DB_HOST, value: {{ .Values.db.host | quote }} }
+            - { name: DB_PORT, value: {{ .Values.db.port | toString | quote }} }
+            - { name: HOME, value: /tmp }
+          resources:
+            requests: { cpu: 20m, memory: 32Mi }
+            limits: { memory: 128Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          volumeMounts:
+            - { name: secrets, mountPath: /mnt/secrets, readOnly: true }
+            - { name: bootstrap, mountPath: /bootstrap, readOnly: true }
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - name: secrets
+          csi:
+            driver: secrets-store.csi.k8s.io
+            readOnly: true
+            volumeAttributes: { secretProviderClass: db-master }
+        - { name: bootstrap, configMap: { name: db-bootstrap } }
+        - { name: tmp, emptyDir: { sizeLimit: 16Mi } }

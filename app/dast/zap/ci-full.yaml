@@ -1,16 +1,15 @@
-# OWASP ZAP Automation Framework plan: FULL scan (passive + active) of ONE AgriPulse app
-# started inside the pipeline job with throwaway data (web / incident-blog: uvicorn + SQLite;
-# mobile-backend: the real request handler behind a local API Gateway stand-in, SQLite + moto).
+# OWASP ZAP Automation Framework plan: FULL scan (passive + active) of ONE AgriPulse service started inside the
+# pipeline job with throwaway data (the services: uvicorn + SQLite, app/dast/start-service.sh; mobile-backend: the
+# real gateway handler behind a local API Gateway stand-in, app/dast/mobile_local.py).
 # Active scanning sends attack payloads and writes data: never against production
 # (production gets prod-baseline.yaml).
 #
 # Inputs (environment variables):
 #   TARGET_URL  e.g. http://localhost:8080
 #   SPEC        OpenAPI file in $DAST_DIR/openapi/ (exported from the app's own code)
-#   APP         web | incident-blog | mobile-backend (report title)
+#   APP         accounts | farm | shop | incidents | mobile-backend (report title)
 #   DAST_DIR    folder with openapi/ and reports/
-# Identity: the app runs with DEV_USER (web, incident-blog) or a fixed Cognito "sub" (mobile), the
-# same thing oauth2-proxy (EKS) / API Gateway's Cognito authorizer provide in production.
+#   DAST_TOKEN  a real token signed with the run's throwaway key (start-service.sh): ZAP scans as a signed-in user
 env:
   contexts:
     - name: agripulse
@@ -26,34 +25,22 @@ env:
     progressToStdout: true
 
 jobs:
-  # mobile-backend: the API Gateway stand-in wants a bearer token, as the Cognito authorizer does
-  # (web and incident-blog ignore it: oauth2-proxy's identity comes from DEV_USER here)
+  # Every request carries the scan's token, as the signed-in web session or the mobile app would
   - type: replacer
     parameters:
       deleteAllRules: true
     rules:
-      - description: test identity
+      - description: signed-in user (a real token, signed with the run's throwaway key)
         matchType: req_header
         matchString: Authorization
         matchRegex: false
-        replacementString: "Bearer dast-ephemeral-identity"
+        replacementString: "Bearer ${DAST_TOKEN}"
 
-  # Triaged false positives, as narrow as possible (rule + URL + parameter + attack), reviewed in
-  # the PR like code. ZAP reports them as "False Positive" and the gate ignores them.
-  - type: alertFilter
-    alertFilters:
-      # SQL Injection (rule 40018, boolean-based) on web /api/prices: ZAP compared "%" with
-      # "XYZABCDEFGHIJ"; "%" is rejected by the crop allow-list (400 "invalid crop") and the other
-      # value is a valid, unknown crop (200, empty list). The query is a bound SQLAlchemy
-      # parameter (MarketPrice.crop == crop, no LIKE). Reviewed 2026-10-18.
-      - ruleId: 40018
-        newRisk: False Positive
-        url: ".*/api/prices.*"
-        urlRegex: true
-        parameter: '^(crop|on)$'
-        parameterRegex: true
-        attack: '.*%$'
-        attackRegex: true
+  # Triaged false positives go here, as narrow as possible (rule + URL + parameter + attack), reviewed in the PR
+  # like code. ZAP then reports them as "False Positive" and the gate ignores them. Example:
+  #   - type: alertFilter
+  #     alertFilters:
+  #       - { ruleId: 40018, newRisk: False Positive, url: ".*/api/catalog.*", urlRegex: true, parameter: "^q$", parameterRegex: true }
 
   - type: openapi
     parameters:
@@ -92,7 +79,7 @@ jobs:
         - { id: 40018, name: SQL Injection, strength: high }
         - { id: 40027, name: SQL Injection - MsSQL, strength: high }
         - { id: 40012, name: Cross Site Scripting (Reflected), strength: high }
-        - { id: 40014, name: Cross Site Scripting (Persistent), strength: high }   # Markdown notes in the incident blog
+        - { id: 40014, name: Cross Site Scripting (Persistent), strength: high }   # listings, profiles, incident notes
         - { id: 90019, name: Server Side Code Injection, strength: high }
         - { id: 90035, name: Server Side Template Injection, strength: high }      # Jinja2 templates
         - { id: 6, name: Path Traversal, strength: high }

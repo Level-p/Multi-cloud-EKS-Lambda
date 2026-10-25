@@ -123,10 +123,10 @@ rules:
           metavariable: $A
           regex: (?i).*(token|secret|api_?key|password|signature).*
 
-  - id: ai-phi-in-logs
+  - id: ai-personal-data-in-logs
     languages: [python]
     severity: ERROR
-    message: "Possible patient data in logs : log opaque ids only, never names, addresses or contact details."
+    message: "Possible personal data in logs (a farmer's or buyer's name, address, e-mail, phone): log opaque ids only."
     metadata: { cwe: "CWE-532" }
     patterns:
       - pattern-either:
@@ -138,7 +138,7 @@ rules:
           regex: ^(debug|info|warning|error|exception|critical)$
       - metavariable-regex:
           metavariable: $KEY
-          regex: (?i)^(name|full_?name|first_?name|last_?name|dob|date_of_birth|address|email|phone|nhs_?number|ssn|pseudonym)$
+          regex: (?i)^(name|full_?name|first_?name|last_?name|owner_?name|buyer_?name|dob|date_of_birth|address|delivery_?address|email|phone)$
 
   # ---- LLM-specific (OWASP Top 10 for LLM applications) ----
   - id: llm-output-executed

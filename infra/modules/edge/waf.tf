@@ -8,8 +8,9 @@
 #   AWSManagedRulesKnownBadInputsRuleSet  exploit patterns (Log4j, Java deserialisation, ...)
 #   AWSManagedRulesAmazonIpReputationList known bad IPs (bots, scanners, botnets)
 #   AWSManagedRulesBotControlRuleSet      scrapers and bad bots; HTTP libraries only COUNT (the mobile app is one)
-#   rate-limit-per-ip                     requests per 5 minutes per client IP
-#   block-scripted-sign-in                curl/wget/python on the staff sign-in flow (credential stuffing)
+#   rate-limit-per-ip                     requests per 5 minutes per client IP (not the mobile API gateway's)
+#   block-scripted-sign-in                curl/wget/python on the sign-in and registration endpoints (credential
+#                                         stuffing, fake sign-ups)
 # The apps still validate everything and only use bound SQL parameters (defence in depth).
 # Blocked and counted requests are logged to CloudWatch (us-east-1).
 # ---------------------------------------------------------------------------
@@ -25,6 +26,16 @@ resource "aws_wafv2_regex_pattern_set" "scripted_clients" {
   scope    = "CLOUDFRONT"
   regular_expression {
     regex_string = "(curl|wget|python-requests|go-http-client|scrapy|httpclient)"
+  }
+}
+
+# The accounts service's sign-in, registration and token endpoints (web forms and the mobile app's API)
+resource "aws_wafv2_regex_pattern_set" "sign_in_paths" {
+  provider = aws.us_east_1
+  name     = "${var.name}-sign-in-paths"
+  scope    = "CLOUDFRONT"
+  regular_expression {
+    regex_string = "^/(login|register|api/token|api/register)/?$"
   }
 }
 
@@ -122,6 +133,28 @@ resource "aws_wafv2_web_acl" "this" {
       rate_based_statement {
         limit              = var.waf_rate_limit
         aggregate_key_type = "IP"
+        # Every mobile app user reaches the services through the mobile API Lambda, i.e. from a few shared
+        # addresses: its requests (X-Mobile-Gateway, a secret only it has) are not counted per IP here.
+        # API Gateway throttles the mobile API itself (modules/mobile-api).
+        scope_down_statement {
+          not_statement {
+            statement {
+              byte_match_statement {
+                search_string         = var.mobile_gateway_secret
+                positional_constraint = "EXACTLY"
+                field_to_match {
+                  single_header {
+                    name = "x-mobile-gateway"
+                  }
+                }
+                text_transformation {
+                  priority = 0
+                  type     = "NONE"
+                }
+              }
+            }
+          }
+        }
       }
     }
     visibility_config {
@@ -145,9 +178,8 @@ resource "aws_wafv2_web_acl" "this" {
     statement {
       and_statement {
         statement {
-          byte_match_statement {
-            search_string         = "/oauth2/"
-            positional_constraint = "CONTAINS"
+          regex_pattern_set_reference_statement {
+            arn = aws_wafv2_regex_pattern_set.sign_in_paths.arn
             field_to_match {
               uri_path {}
             }
@@ -226,12 +258,17 @@ resource "aws_wafv2_web_acl_logging_configuration" "this" {
 
   redacted_fields {
     single_header {
-      name = "authorization" # Cognito tokens of the mobile app
+      name = "authorization" # bearer tokens of the mobile app
     }
   }
   redacted_fields {
     single_header {
-      name = "cookie" # oauth2-proxy session cookies
+      name = "cookie" # session cookies (signed tokens)
+    }
+  }
+  redacted_fields {
+    single_header {
+      name = "x-mobile-gateway"
     }
   }
 }

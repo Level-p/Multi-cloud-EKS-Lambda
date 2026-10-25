@@ -1,6 +1,6 @@
 # ---------------------------------------------------------------------------
 # Supply chain on AWS
-#   ECR: one repository per EKS app; immutable tags (a deployed tag can never be repointed), scan on
+#   ECR: one repository per service; immutable tags (a deployed tag can never be repointed), scan on
 #        push, old images expire. (The mobile API is a Lambda zip, not an image.)
 #   KMS: the Cosign signing key (ECC P-256, SIGN_VERIFY). The private key never leaves KMS: the pipeline
 #        signs image digests through the KMS API (cosign --key awskms:///alias/...).

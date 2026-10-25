@@ -1,0 +1,38 @@
+# AgriPulse farm: farmers' profiles, listings and farm records -> EKS, staging then production
+# (Argo Rollouts canary with Prometheus analysis in both). Stages: _service.yml
+name: farm
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "app/farm/**"
+      - "app/common/**"
+      - "app/Dockerfile"
+      - "app/dast/**"
+      - "gitops/charts/agripulse-service/**"
+      - "gitops/services/farm/values.yaml"
+      - ".github/workflows/farm.yml"
+      - ".github/workflows/_service.yml"
+      - ".github/actions/**"
+  pull_request:
+    branches: [main]
+    paths: ["app/farm/**", "app/common/**", "app/Dockerfile", "app/dast/**", "gitops/charts/agripulse-service/**", "gitops/services/farm/values.yaml"]
+  workflow_dispatch:
+
+permissions:
+  contents: write   # the deploy jobs commit the new image to gitops/services/farm/
+  id-token: write   # OIDC token for AWS
+  actions: read     # the AI diagnosis reads the failed jobs' logs
+  checks: read
+
+concurrency:
+  group: farm-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  pipeline:
+    uses: ./.github/workflows/_service.yml
+    secrets: inherit
+    with:
+      service: farm

@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block title %}{{ farm.farm_name }} · AgriPulse{% endblock %}
+{% block content %}
+<div class="card">
+  <h1>{{ farm.farm_name }}</h1>
+  <p>{{ farm.region }}{% if farm.address %} · {{ farm.address }}{% endif %} · {{ farm.hectares }} ha · supplies up to {{ farm.capacity_tonnes_month }} t a month</p>
+  {% if farm.description %}<p>{{ farm.description }}</p>{% endif %}
+</div>
+<h2>On sale</h2>
+<div class="grid">
+{% for l in listings %}
+  <a class="item" href="{{ env.shop_url }}/items/{{ l.id }}">
+    {% if l.image_url %}<img src="{{ l.image_url }}" alt="{{ l.title }}">{% endif %}
+    <strong>{{ l.title }}</strong>
+    <span class="price">{{ "%.2f"|format(l.price) }} {{ l.currency }} / {{ l.unit }}</span>
+    <span class="muted">{{ l.quantity }} {{ l.unit }} available</span>
+  </a>
+{% else %}
+  <p>Nothing on sale right now.</p>
+{% endfor %}
+</div>
+{% endblock %}

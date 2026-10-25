@@ -1,0 +1,16 @@
+# Placeholders for the values Terraform passes to the chart in the cluster (infra/platform/main.tf), so the CI can
+# render gitops/charts/agripulse-service exactly as Argo CD will and scan the manifests (Checkov). Never deployed.
+requireBuiltImage: false
+image: { registry: 111111111111.dkr.ecr.eu-west-2.amazonaws.com }
+publicUrl: https://service.example.com
+urls: { accounts: "https://accounts.example.com", farm: "https://farm.example.com", shop: "https://shop.example.com", incidents: "https://incidents.example.com" }
+cookie: { domain: example.com, name: agripulse_session_ci }
+jwt: { issuer: agripulse-accounts-ci }
+db: { host: db.example.internal, port: 5432, name: service_ci, user: agripulse_service_ci }
+aws:
+  region: eu-west-2
+  targetGroupArn: arn:aws:elasticloadbalancing:eu-west-2:111111111111:targetgroup/ci/0000000000000000
+  albSourceCidrs: [10.50.0.0/20, 10.50.16.0/20]
+  secretPrefix: agripulse/ci
+  secretRoot: agripulse
+env: { MEDIA_CDN_DOMAIN: media.example.com }

@@ -1,0 +1,239 @@
+# ---------------------------------------------------------------------------
+# CI/CD of one AgriPulse microservice (accounts, farm, shop or incidents), GitOps style, staging then production.
+# Called by accounts.yml, farm.yml, shop.yml, incidents.yml.
+#   test               pytest with hash-verified dependencies (the service + app/common)
+#   security           Gitleaks, Semgrep (+ AI-code rules), pip-audit, Checkov on the chart as Argo CD renders it
+#   dast               OWASP ZAP full scan (passive + active) of the service started on the runner
+#   (scans are report only unless the repository variable SECURITY_GATES is "enforce")
+#   build              docker build (app/Dockerfile) -> Trivy -> push to ECR -> SBOM (Syft)
+#                      -> Cosign signature + SBOM attestation with the AWS KMS key                 (main only)
+#   staging            commit the image to gitops/services/<service>/staging.yaml; Argo CD deploys it to
+#                      <service>-staging; the canary analysis decides                             (automatic)
+#   production         approval (environment agripulse-production), then the SAME signed image to
+#                      gitops/services/<service>/production.yaml and <service>-production
+#   dast-production    OWASP ZAP baseline (passive) of the public URL (AWS WAF -> CloudFront -> ALB)
+#   diagnose           (only on failure) AI explanation of what broke (Claude)
+# Registry, cluster, signing key and URLs come from the Terraform state (.github/actions/infra-outputs).
+# ---------------------------------------------------------------------------
+name: service
+
+on:
+  workflow_call:
+    inputs:
+      service: { type: string, required: true, description: "accounts | farm | shop | incidents (the folder under app/)" }
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  AWS_REGION: eu-west-2
+  TAG: r${{ github.run_number }}-${{ github.sha }}
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/python-tests
+        with:
+          app-path: app/${{ inputs.service }}
+          python-path: ../common
+
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      # Checkov scans what Argo CD will apply: the chart rendered with this service's values, in both environments
+      - name: Render the chart (staging, production)
+        env:
+          SERVICE: ${{ inputs.service }}
+        run: |
+          set -euo pipefail
+          mkdir -p rendered
+          for e in staging production; do
+            helm template "$SERVICE" gitops/charts/agripulse-service -n "$SERVICE-$e" --set environment="$e" \
+              -f "gitops/services/$SERVICE/values.yaml" -f "gitops/services/$SERVICE/$e.yaml" -f .github/ci/chart-values.yaml \
+              > "rendered/$SERVICE-$e.yaml"
+          done
+      - uses: ./.github/actions/security-scans
+        with:
+          app-path: app/${{ inputs.service }}
+          iac-paths: rendered
+          blocking: ${{ vars.SECURITY_GATES == 'enforce' }}   # report only unless the repository variable says enforce
+
+  dast:
+    name: dast (OWASP ZAP, ephemeral)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/dast-zap
+        with:
+          app: ${{ inputs.service }}
+          mode: ephemeral
+          blocking: ${{ vars.SECURITY_GATES == 'enforce' }}   # report only unless the repository variable says enforce
+
+  build:
+    needs: [test, security, dast]
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    outputs:
+      digest: ${{ steps.push.outputs.digest }}   # sha256:... of the image that was signed
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: ./.github/actions/infra-outputs
+        with:
+          stack: aws
+
+      - name: docker build
+        env:
+          SERVICE: ${{ inputs.service }}
+        run: |
+          echo "IMAGE=$TF_OUT_ECR_REGISTRY/agripulse/$SERVICE:$TAG" >> "$GITHUB_ENV"
+          docker build -f app/Dockerfile --build-arg SERVICE="$SERVICE" -t "$TF_OUT_ECR_REGISTRY/agripulse/$SERVICE:$TAG" app
+
+      # HIGH is always report only; fixable CRITICAL fails the run only when SECURITY_GATES = enforce
+      - name: Trivy (image vulnerabilities)
+        env:
+          GATE: ${{ vars.SECURITY_GATES == 'enforce' && '1' || '0' }}
+        run: |
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:0.76.0 image \
+            --severity HIGH --ignore-unfixed --exit-code 0 --no-progress "$IMAGE"
+          if ! docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:0.76.0 image \
+            --severity CRITICAL --ignore-unfixed --exit-code 1 --no-progress "$IMAGE"; then
+            if [ "$GATE" = "1" ]; then exit 1; fi
+            echo "::warning title=Trivy (report only)::fixable CRITICAL vulnerabilities in the image (see above); not failing the run while SECURITY_GATES is not 'enforce'"
+            echo "- Trivy: fixable CRITICAL vulnerabilities (report only)" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Push, SBOM, sign, attest
+        id: push
+        run: |
+          set -euo pipefail
+          aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$TF_OUT_ECR_REGISTRY"
+          docker push "$IMAGE"
+          DIGEST_REF="${IMAGE%:*}@$(docker inspect --format '{{index .RepoDigests 0}}' "$IMAGE" | cut -d@ -f2)"
+          echo "digest=${DIGEST_REF##*@}" >> "$GITHUB_OUTPUT"
+
+          curl -sSfL https://raw.githubusercontent.com/anchore/syft/v1.54.1/install.sh | sudo sh -s -- -b /usr/local/bin v1.54.1
+          syft "$DIGEST_REF" -o cyclonedx-json=sbom.cdx.json
+
+          sudo curl -sSfLo /usr/local/bin/cosign https://github.com/sigstore/cosign/releases/download/v2.6.5/cosign-linux-amd64   # v2 line: stable key-based flags
+          sudo chmod +x /usr/local/bin/cosign
+          # The private key never leaves AWS KMS: cosign asks KMS to sign the digest (AWS credentials from OIDC)
+          KEY="$TF_OUT_COSIGN_KEY_URI"
+          cosign sign --yes --tlog-upload=false --key "$KEY" "$DIGEST_REF"
+          cosign attest --yes --tlog-upload=false --key "$KEY" --type cyclonedx --predicate sbom.cdx.json "$DIGEST_REF"
+          cosign verify --insecure-ignore-tlog --key "$KEY" "$DIGEST_REF" > /dev/null
+          echo "Signed and attested $DIGEST_REF" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: sbom-${{ inputs.service }}
+          path: sbom.cdx.json
+
+  staging:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    permissions:
+      contents: write   # the GITHUB_TOKEN pushes the GitOps commit
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - uses: ./.github/actions/infra-outputs
+        with:
+          stack: aws
+      - uses: ./.github/actions/gitops-deploy
+        with:
+          service: ${{ inputs.service }}
+          environment: staging
+          tag: ${{ env.TAG }}
+          digest: ${{ needs.build.outputs.digest }}
+
+  production:
+    needs: [build, staging]
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    environment: agripulse-production   # required reviewers: Settings > Environments
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - uses: ./.github/actions/infra-outputs
+        with:
+          stack: aws
+      - uses: ./.github/actions/gitops-deploy
+        with:
+          service: ${{ inputs.service }}
+          environment: production
+          tag: ${{ env.TAG }}
+          digest: ${{ needs.build.outputs.digest }}   # the image staging ran, not a rebuild
+
+  dast-production:
+    name: dast-production (OWASP ZAP baseline)
+    needs: production
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: ./.github/actions/infra-outputs
+        with:
+          stack: aws
+
+      - name: The service's public URL (output <service>_url)
+        env:
+          SERVICE: ${{ inputs.service }}
+        run: |
+          VAR="TF_OUT_${SERVICE^^}_URL"
+          echo "TARGET_URL=${!VAR}" >> "$GITHUB_ENV"
+
+      - uses: ./.github/actions/dast-zap
+        with:
+          app: ${{ inputs.service }}
+          mode: production
+          target-url: ${{ env.TARGET_URL }}
+          blocking: ${{ vars.SECURITY_GATES == 'enforce' }}   # report only unless the repository variable says enforce
+
+  diagnose:
+    needs: [test, security, dast, build, staging, production, dast-production]
+    if: failure()
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      checks: read
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/ai-diagnosis
+        with:
+          anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+          slack-webhook-url: ${{ secrets.SLACK_WEBHOOK_URL }}

@@ -1,37 +1,55 @@
 import json
 import os
 import sys
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-import boto3
 import pytest
-from moto import mock_aws
 
 sys.path.insert(0, str(Path(__file__).parent.parent))   # app/mobile-backend: agripulse_mobile
-os.environ.update(AWS_DEFAULT_REGION="eu-west-2", AWS_ACCESS_KEY_ID="test", AWS_SECRET_ACCESS_KEY="test")
 
-from agripulse_mobile import api  # noqa: E402
-from agripulse_mobile.db import make_session_factory  # noqa: E402
-
-REGION = "eu-west-2"
 ORIGIN_SECRET = "origin-secret-for-tests"
 
 
+class Upstream(BaseHTTPRequestHandler):
+    """Stands in for accounts, farm and shop: answers with what it received, or a status chosen by the path."""
+    seen: list = []
+
+    def _answer(self):
+        length = int(self.headers.get("Content-Length") or 0)
+        body = self.rfile.read(length) if length else b""
+        record = {"method": self.command, "path": self.path, "headers": {k.lower(): v for k, v in self.headers.items()},
+                  "body": body.decode()}
+        Upstream.seen.append(record)
+        status = 401 if "/api/me" in self.path and "authorization" not in record["headers"] else 200
+        payload = json.dumps({"detail": "sign in required"} if status == 401 else {"echo": record["path"]}).encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+    do_GET = do_POST = do_PUT = do_PATCH = do_DELETE = _answer
+
+    def log_message(self, *args):
+        pass
+
+
+@pytest.fixture(scope="session")
+def upstream():
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Upstream)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{server.server_port}"
+    yield base
+    server.shutdown()
+
+
 @pytest.fixture(autouse=True)
-def deps():
-    with mock_aws():
-        s3 = boto3.client("s3", region_name=REGION)
-        s3.create_bucket(Bucket="agripulse-media-test", CreateBucketConfiguration={"LocationConstraint": REGION})
-        api.configure(api.Dependencies(sessions=make_session_factory("sqlite://"), s3=s3, media_bucket="agripulse-media-test",
-                                       media_cdn_domain="media.example.com", origin_secret=ORIGIN_SECRET))
-        yield
-        api.configure(None)
-
-
-def call(method, path, body=None, user="farmer-1", origin=ORIGIN_SECRET):
-    """user: the Cognito "sub" the API Gateway authorizer would pass (None = no valid token)."""
-    headers = {"Content-Type": "application/json"}
-    if origin:
-        headers["X-Origin-Verify"] = origin
-    resp = api.handle(method, path, headers, json.dumps(body).encode() if body is not None else b"", user=user)
-    return resp.status, resp.body
+def env(upstream, monkeypatch):
+    Upstream.seen.clear()
+    for name in ("ACCOUNTS_URL", "FARM_URL", "SHOP_URL"):
+        monkeypatch.setenv(name, upstream)
+    monkeypatch.setenv("ORIGIN_VERIFY_SECRET", ORIGIN_SECRET)
+    monkeypatch.setenv("MOBILE_GATEWAY_SECRET", "gateway-secret")
+    yield Upstream.seen

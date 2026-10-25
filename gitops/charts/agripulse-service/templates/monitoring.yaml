@@ -1,0 +1,70 @@
+{{- $name := include "svc.name" . }}
+{{- $ns := .Release.Namespace }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ $name }}
+  labels: {{- include "svc.labels" . | nindent 4 }}
+spec:
+  selector: { matchLabels: { app.kubernetes.io/name: {{ $name }} } }
+  # Lets the canary analysis select the new pods only
+  podTargetLabels: [rollouts-pod-template-hash]
+  endpoints: [{ port: http, path: /metrics, interval: 15s }]
+---
+# Alerts of this service in this environment. Alertmanager sends every alert to Slack; critical and warning alerts
+# also open an incident in the incident blog (which reports it to Slack again, with the link to its timeline).
+# The service's OpenTelemetry alerts (span metrics) are cluster-wide rules in infra/modules/k8s-observability.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ $name }}
+  labels: {{- include "svc.labels" . | nindent 4 }}
+spec:
+  groups:
+    - name: {{ $name }}
+      rules:
+        - alert: AgriPulseServiceHighErrorRate
+          expr: |
+            sum(rate(http_requests_total{namespace="{{ $ns }}", status=~"5.."}[5m]))
+              / clamp_min(sum(rate(http_requests_total{namespace="{{ $ns }}"}[5m])), 1e-6) > 0.05
+          for: 5m
+          labels: { severity: critical, namespace: {{ $ns }}, service: {{ $name }}, environment: {{ .Values.environment }} }
+          annotations: { summary: "{{ $name }} ({{ .Values.environment }}): more than 5% of requests fail" }
+        - alert: AgriPulseServiceSlowP95
+          expr: histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket{namespace="{{ $ns }}"}[5m]))) > 1
+          for: 10m
+          labels: { severity: warning, namespace: {{ $ns }}, service: {{ $name }}, environment: {{ .Values.environment }} }
+          annotations: { summary: "{{ $name }} ({{ .Values.environment }}): p95 latency above 1 s" }
+        - alert: AgriPulseCanaryAborted
+          expr: rollout_info{namespace="{{ $ns }}", phase="Degraded"} == 1
+          labels: { severity: warning, namespace: {{ $ns }}, service: {{ $name }}, environment: {{ .Values.environment }} }
+          annotations: { summary: "{{ $name }} ({{ .Values.environment }}): a canary release was aborted by the automated analysis and rolled back" }
+        {{- range .Values.alerts }}
+        - alert: {{ .alert }}
+          expr: {{ .expr | replace "NAMESPACE" $ns | quote }}
+          {{- with .for }}
+          for: {{ . }}
+          {{- end }}
+          labels: { severity: {{ .severity }}, namespace: {{ $ns }}, service: {{ $name }}, environment: {{ $.Values.environment }} }
+          annotations: { summary: {{ printf "%s (%s): %s" $name $.Values.environment .summary | quote }} }
+        {{- end }}
+        {{- if .Values.redis.enabled }}
+        # The cache exists to protect PostgreSQL (a db.t3.micro): a low hit ratio predicts database CPU trouble
+        - alert: AgriPulseCacheHitRatioLow
+          expr: |
+            sum(rate(agripulse_cache_hits_total{namespace="{{ $ns }}"}[15m]))
+              / clamp_min(sum(rate(agripulse_cache_hits_total{namespace="{{ $ns }}"}[15m])) + sum(rate(agripulse_cache_misses_total{namespace="{{ $ns }}"}[15m])), 1e-6) < 0.6
+          for: 15m
+          labels: { severity: warning, namespace: {{ $ns }}, service: {{ $name }}, environment: {{ .Values.environment }} }
+          annotations: { summary: "{{ $name }}: Redis hit ratio below 60%, reads are falling through to the services and PostgreSQL" }
+        - alert: AgriPulseRedisDown
+          expr: redis_up{namespace="{{ $ns }}"} == 0 or absent(redis_up{namespace="{{ $ns }}"})
+          for: 5m
+          labels: { severity: warning, namespace: {{ $ns }}, service: {{ $name }}, environment: {{ .Values.environment }} }
+          annotations: { summary: "{{ $name }}: the in-cluster Valkey cache is down (no carts, no catalog cache)" }
+        - alert: AgriPulseRedisMemoryHigh
+          expr: redis_memory_used_bytes{namespace="{{ $ns }}"} / redis_memory_max_bytes{namespace="{{ $ns }}"} > 0.9
+          for: 15m
+          labels: { severity: info, namespace: {{ $ns }}, service: {{ $name }}, environment: {{ .Values.environment }} }
+          annotations: { summary: "{{ $name }}: Valkey is near maxmemory and evicting keys" }
+        {{- end }}

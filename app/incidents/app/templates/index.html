@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}Incidents · AgriPulse operations{% endblock %}
+{% block content %}
+<div class="kpis">
+  <div class="kpi">Open incidents<b>{{ kpi.open }}</b></div>
+  <div class="kpi">MTTA (min)<b>{{ kpi.mtta if kpi.mtta is not none else "–" }}</b></div>
+  <div class="kpi">MTTR (min)<b>{{ kpi.mttr if kpi.mttr is not none else "–" }}</b></div>
+  <div class="kpi">All incidents<b>{{ kpi.total }}</b></div>
+</div>
+<table>
+  <thead><tr><th>#</th><th>Incident</th><th>Severity</th><th>State</th><th>Detected</th><th>Commander</th></tr></thead>
+  <tbody>
+  {% for i in incidents %}
+    <tr><td>{{ i.id }}</td><td><a href="/incidents/{{ i.id }}">{{ i.title }}</a></td><td class="sev-{{ i.severity }}">{{ i.severity }}</td>
+        <td><span class="state {{ i.state }}">{{ LABELS[i.state] }}</span></td><td>{{ i.detected_at.strftime("%Y-%m-%d %H:%M") }}</td><td>{{ i.commander }}</td></tr>
+  {% else %}
+    <tr><td colspan="6">No incidents recorded.</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+<h2>Declare an incident</h2>
+<form method="post" action="/incidents" class="stack">
+  <input type="hidden" name="csrf" value="{{ csrf_token(request) }}">
+  <input name="title" placeholder="What is happening (e.g. Mobile uploads failing)" required minlength="5" maxlength="140">
+  <select name="severity">{% for s in SEVERITIES %}<option>{{ s }}</option>{% endfor %}</select>
+  <input name="services" placeholder="Affected services (e.g. mobile-backend, web)" maxlength="200">
+  <textarea name="summary" placeholder="Impact, first observations (Markdown)"></textarea>
+  <button type="submit">Declare</button>
+</form>
+{% endblock %}

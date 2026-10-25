@@ -1,7 +1,16 @@
-variable "app_namespaces" {
-  description = "Argo CD Application (= chart under gitops/charts) => namespace"
-  type        = map(string)
-  default     = { agripulse-web = "agripulse", incident-blog = "incident-response" }
+variable "deployments" {
+  description = "<service>-<environment> (= namespace = Argo CD Application) => { service, environment, values (Helm values only Terraform knows) }"
+  type = map(object({
+    service     = string
+    environment = string
+    values      = any
+  }))
+}
+
+variable "redis_deployments" {
+  description = "Deployments whose service runs a Valkey cache (gets a password Secret <service>-redis)"
+  type        = list(string)
+  default     = []
 }
 
 variable "git_repo_url" {
@@ -17,16 +26,6 @@ variable "git_repo_token" {
 variable "git_revision" {
   type    = string
   default = "main"
-}
-
-variable "common_values" {
-  description = "Values for both charts: image.registry, aws.*, db.*, auth.* (see gitops/charts/*/values.yaml)"
-  type        = any
-}
-
-variable "app_values" {
-  description = "Per-chart values merged over common_values (each needs an aws and a db map)"
-  type        = any
 }
 
 variable "argocd_host" {

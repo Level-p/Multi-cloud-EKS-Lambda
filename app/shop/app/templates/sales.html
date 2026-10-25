@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block title %}My sales · AgriPulse{% endblock %}
+{% block content %}
+<h1>Orders for my farm</h1>
+{% if error %}<p class="error">{{ error }}</p>{% endif %}
+{% for o in orders %}
+<div class="card">
+  <p><strong>Order {{ o.id }}</strong> · <span class="tag status-{{ o.status }}">{{ o.status }}</span> · {{ "%.2f"|format(o.total) }} {{ o.currency }}
+     · {{ o.created_at[:10] }}</p>
+  <p>{{ o.buyer.name }} · {{ o.phone }} · {{ o.delivery_address }}</p>
+  <ul>{% for i in o["items"] %}<li>{{ i.quantity }} {{ i.unit }} {{ i.title }}</li>{% endfor %}</ul>
+  {% for next_status in moves.get(o.status, ()) %}
+  <form method="post" action="/sales/{{ o.id }}/status" class="inline-form">
+    <input type="hidden" name="csrf" value="{{ csrf_token(request) }}"><input type="hidden" name="status" value="{{ next_status }}">
+    <button {% if next_status == "cancelled" %}class="secondary"{% endif %} type="submit">{{ "Decline" if next_status == "cancelled" else next_status|capitalize }}</button>
+  </form>
+  {% endfor %}
+</div>
+{% else %}
+<p>No orders yet. <a href="{{ env.farm_url }}/dashboard">Add listings</a> so buyers can find you.</p>
+{% endfor %}
+{% endblock %}

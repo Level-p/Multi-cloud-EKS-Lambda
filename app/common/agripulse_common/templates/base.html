@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}AgriPulse{% endblock %}</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header>
+    <a class="brand" href="{{ env.shop_url or '/' }}/">AgriPulse</a>
+    {% if env.environment != "production" %}<span class="env">{{ env.environment }}</span>{% endif %}
+    <nav>
+      <a href="{{ env.shop_url }}/">Shop</a>
+      <a href="{{ env.farm_url }}/">For farmers</a>
+      {% if me and me.role == "buyer" %}<a href="{{ env.shop_url }}/orders">My orders</a>{% endif %}
+      {% if me and me.role == "farmer" %}<a href="{{ env.farm_url }}/dashboard">My farm</a><a href="{{ env.shop_url }}/sales">My sales</a>{% endif %}
+    </nav>
+    <span class="who">
+      {% if me %}
+        <a href="{{ env.accounts_url }}/">{{ me.name }} ({{ me.role }})</a>
+        <a href="{{ env.accounts_url }}/logout">Sign out</a>
+      {% else %}
+        <a href="{{ env.accounts_url }}/login">Sign in</a>
+        <a class="button" href="{{ env.accounts_url }}/register">Register</a>
+      {% endif %}
+    </span>
+  </header>
+  <main>{% block content %}{% endblock %}</main>
+  <footer>AgriPulse · fresh produce straight from the farm · {{ env.environment }}</footer>
+</body>
+</html>

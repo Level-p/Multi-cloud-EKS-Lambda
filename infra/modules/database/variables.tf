@@ -12,7 +12,7 @@ variable "subnet_ids" {
 }
 
 variable "client_security_group_ids" {
-  description = "Who may connect on 5432: label => security group id (EKS pods, the mobile Lambda)"
+  description = "Who may connect on 5432: label => security group id (the EKS pods)"
   type        = map(string)
 }
 

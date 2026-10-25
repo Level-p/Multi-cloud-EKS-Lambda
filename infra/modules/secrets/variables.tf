@@ -7,14 +7,18 @@ variable "region" {
   type = string
 }
 
-variable "slack_webhook_url" {
-  description = "Slack incoming webhook for every alert"
-  type        = string
-  sensitive   = true
+variable "services" {
+  description = "The microservices (each gets a CSRF secret per environment)"
+  type        = list(string)
 }
 
-variable "oauth2_client_secret" {
-  description = "Client secret of the staff sign-in app client (modules/identity)"
+variable "environments" {
+  description = "staging, production: each has its own keys and tokens"
+  type        = list(string)
+}
+
+variable "slack_webhook_url" {
+  description = "Slack incoming webhook for every alert and incident report"
   type        = string
   sensitive   = true
 }

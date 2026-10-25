@@ -1,0 +1,91 @@
+{% extends "base.html" %}
+{% block title %}My farm · AgriPulse{% endblock %}
+{% block content %}
+<h1>{{ farm.farm_name if farm else "Welcome, " ~ me.name }}</h1>
+{% if notice %}<p class="notice">{{ notice }}</p>{% endif %}
+{% if error %}<p class="error">{{ error }}</p>{% endif %}
+<p><a href="{{ env.shop_url }}/sales">Orders for my farm</a>{% if farm %} · <a href="/farms/{{ farm.owner_id }}">My public farm page</a>{% endif %}</p>
+
+<div class="card">
+  <h2>Farm profile</h2>
+  <form method="post" action="/profile" class="stack">
+    <input type="hidden" name="csrf" value="{{ csrf_token(request) }}">
+    <label>Farm name <input name="farm_name" required minlength="2" maxlength="100" value="{{ farm.farm_name if farm else '' }}"></label>
+    <label>Phone <input name="phone" maxlength="30" value="{{ farm.phone if farm else '' }}"></label>
+    <label>Region / state <input name="region" required minlength="2" maxlength="60" value="{{ farm.region if farm else '' }}"></label>
+    <label>Address <input name="address" maxlength="200" value="{{ farm.address if farm else '' }}"></label>
+    <label>Latitude (optional) <input name="latitude" type="number" step="any" min="-90" max="90" value="{{ farm.latitude if farm and farm.latitude is not none else '' }}"></label>
+    <label>Longitude (optional) <input name="longitude" type="number" step="any" min="-180" max="180" value="{{ farm.longitude if farm and farm.longitude is not none else '' }}"></label>
+    <label>Farm size (hectares) <input name="hectares" type="number" step="0.01" min="0.01" required value="{{ farm.hectares if farm else '' }}"></label>
+    <label>Capacity (tonnes per month) <input name="capacity_tonnes_month" type="number" step="0.01" min="0" required value="{{ farm.capacity_tonnes_month if farm else '' }}"></label>
+    <label>About the farm <textarea name="description" maxlength="2000" rows="3">{{ farm.description if farm else '' }}</textarea></label>
+    <button type="submit">Save profile</button>
+  </form>
+</div>
+
+<div class="card">
+  <h2>What I sell</h2>
+  <table>
+    <thead><tr><th>Item</th><th>Price</th><th>In stock</th><th>Change</th><th></th></tr></thead>
+    <tbody>
+    {% for l in listings %}
+      <tr>
+        <td><strong>{{ l.title }}</strong><br><span class="muted">{{ l.kind }} · {{ l.category }}</span>
+          {% if not l.active %}<br><span class="tag status-cancelled">hidden</span>{% endif %}</td>
+        <td>{{ "%.2f"|format(l.price) }} {{ l.currency }} / {{ l.unit }}</td>
+        <td>{{ l.quantity }} {{ l.unit }}</td>
+        <td>
+          <form method="post" action="/listings/{{ l.id }}/update" class="inline">
+            <input type="hidden" name="csrf" value="{{ csrf_token(request) }}">
+            <input name="price" type="number" step="0.01" min="0.01" value="{{ l.price }}" aria-label="Price" size="7">
+            <input name="quantity" type="number" step="any" min="0" value="{{ l.quantity }}" aria-label="Quantity" size="6">
+            <label class="inline"><input type="checkbox" name="active" {% if l.active %}checked{% endif %}> on sale</label>
+            <button type="submit">Save</button>
+          </form>
+        </td>
+        <td><a href="/listings/{{ l.id }}/photo">Photo</a></td>
+      </tr>
+    {% else %}
+      <tr><td colspan="5">Nothing listed yet{% if not farm %}: save your farm profile first{% endif %}.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% if farm %}
+  <form method="post" action="/listings" class="stack">
+    <input type="hidden" name="csrf" value="{{ csrf_token(request) }}">
+    <label>Title <input name="title" required minlength="2" maxlength="100" placeholder="Fresh tomatoes"></label>
+    <label>Type <select name="kind"><option value="produce">Produce</option><option value="resource">Farm resource (seedlings, manure, equipment hire...)</option></select></label>
+    <label>Category <input name="category" required minlength="2" maxlength="40" placeholder="Vegetables"></label>
+    <label>Unit <select name="unit">{% for u in units %}<option>{{ u }}</option>{% endfor %}</select></label>
+    <label>Price per unit ({{ currency }}) <input name="price" type="number" step="0.01" min="0.01" required></label>
+    <label>Quantity in stock <input name="quantity" type="number" step="any" min="0" required></label>
+    <label>Description <textarea name="description" maxlength="2000" rows="2"></textarea></label>
+    <button type="submit">List it</button>
+  </form>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h2>Farm records</h2>
+  <form method="post" action="/activities" class="inline">
+    <input type="hidden" name="csrf" value="{{ csrf_token(request) }}">
+    <input name="on" type="date" required value="{{ today }}" aria-label="Date">
+    <select name="kind" aria-label="Activity">{% for k in activity_kinds %}<option>{{ k }}</option>{% endfor %}</select>
+    <input name="crop" maxlength="60" placeholder="Crop / animals">
+    <input name="quantity" type="number" step="any" min="0" placeholder="Quantity" size="8">
+    <select name="unit" aria-label="Unit"><option value="">unit</option>{% for u in units %}<option>{{ u }}</option>{% endfor %}</select>
+    <input name="notes" maxlength="2000" placeholder="Notes">
+    <button type="submit">Add record</button>
+  </form>
+  <table>
+    <thead><tr><th>Date</th><th>Activity</th><th>Crop</th><th>Quantity</th><th>Notes</th></tr></thead>
+    <tbody>
+    {% for a in activities %}
+      <tr><td>{{ a.on }}</td><td>{{ a.kind }}</td><td>{{ a.crop }}</td><td>{{ a.quantity if a.quantity is not none else "" }} {{ a.unit }}</td><td>{{ a.notes }}</td></tr>
+    {% else %}
+      <tr><td colspan="5">No records yet.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

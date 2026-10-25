@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% block title %}Sell from your farm · AgriPulse{% endblock %}
+{% block content %}
+<div class="card">
+  <h1>Sell straight from your farm</h1>
+  <p>Register your farm, list your produce and farm resources with your own prices, and buyers order directly from you.
+     Keep your farm records (planting, spraying, harvests, sales) in the same place, on the web or in the mobile app.</p>
+  <p><a class="button" href="{{ env.accounts_url }}/register?role=farmer&amp;next={{ (env.farm_url ~ '/dashboard')|urlencode }}">Register your farm</a>
+     <a href="{{ env.accounts_url }}/login?next={{ (env.farm_url ~ '/dashboard')|urlencode }}">I already have an account</a></p>
+  {% if me and me.role != "farmer" %}<p class="muted">You are signed in as a {{ me.role }}: the farmer tools need a farmer account.</p>{% endif %}
+</div>
+{% endblock %}

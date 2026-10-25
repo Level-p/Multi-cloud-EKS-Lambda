@@ -1,5 +1,5 @@
-# Every container of a pod in the app namespaces comes from our ECR (agripulse/*), is the pinned oauth2-proxy
-# release line, or is one of the exact digests of Valkey and redis_exporter. Anything else is rejected.
+# Every container of a pod in the app namespaces comes from our ECR (agripulse/*) or is one of the exact digests of
+# Valkey and redis_exporter. Anything else is rejected.
 {{- if not .Values.registry }}{{ fail "registry is required" }}{{ end }}
 apiVersion: policies.kyverno.io/v1
 kind: ValidatingPolicy
@@ -21,12 +21,10 @@ spec:
     - expression: >-
         variables.images.all(i,
           i.startsWith({{ printf "'%s/agripulse/'" .Values.registry }})
-          || i.startsWith({{ printf "'%s'" .Values.oauth2ProxyPrefix }})
           || i in variables.pinned)
       messageExpression: >-
         'image not allowed in this namespace: ' + variables.images.filter(i,
           !(i.startsWith({{ printf "'%s/agripulse/'" .Values.registry }})
-          || i.startsWith({{ printf "'%s'" .Values.oauth2ProxyPrefix }})
           || i in variables.pinned)).join(', ')
       reason: Forbidden
 {{- define "policies.cel-strings" -}}

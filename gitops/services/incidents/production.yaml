@@ -1,0 +1,5 @@
+# Written by the pipeline after approval (GitHub environment agripulse-production): the same image staging ran
+image:
+  tag: initial
+  digest: ""
+replicas: 2

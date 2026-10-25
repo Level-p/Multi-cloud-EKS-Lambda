@@ -31,7 +31,7 @@
     "refresh": 2,
     "includeAll": true,
     "multi": true,
-    "allValue": "agripulse-web|incident-blog",
+    "allValue": "accounts|farm|shop|incidents",
     "current": {
      "text": [
       "All"

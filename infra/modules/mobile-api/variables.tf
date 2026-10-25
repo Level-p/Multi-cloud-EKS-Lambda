@@ -2,49 +2,9 @@ variable "name" {
   type = string
 }
 
-variable "subnet_ids" {
-  description = "Private subnets for the Lambda's network interfaces"
-  type        = list(string)
-}
-
-variable "security_group_id" {
-  description = "The Lambda's security group (admitted by the database's)"
-  type        = string
-}
-
-variable "user_pool_arn" {
-  description = "Cognito user pool of the farmers (API Gateway authorizer)"
-  type        = string
-}
-
-variable "db_host" {
-  type = string
-}
-
-variable "db_port" {
-  type = number
-}
-
-variable "db_user" {
-  type    = string
-  default = "agripulse_mobile"
-}
-
-variable "db_connect_arn" {
-  description = "arn:aws:rds-db:<region>:<account>:dbuser:<DbiResourceId>/<db_user>"
-  type        = string
-}
-
-variable "media_bucket" {
-  type = string
-}
-
-variable "media_bucket_arn" {
-  type = string
-}
-
-variable "media_cdn_domain" {
-  type = string
+variable "service_urls" {
+  description = "Public URLs of the production services the gateway calls: accounts, farm, shop"
+  type        = map(string)
 }
 
 variable "origin_verify_secret" {
@@ -53,11 +13,16 @@ variable "origin_verify_secret" {
   sensitive   = true
 }
 
+variable "mobile_gateway_secret" {
+  description = "Value the Lambda sends as X-Mobile-Gateway (exempt from the WAF's per-IP rate limit)"
+  type        = string
+  sensitive   = true
+}
+
 variable "reserved_concurrency" {
   description = <<-EOT
-    Maximum concurrent Lambda instances = maximum PostgreSQL connections the mobile API can open (db.t3.micro
-    allows ~80 in total). -1 = no reservation: new accounts have a concurrency quota of 10, all of which must
-    stay unreserved, and that quota then caps the connections by itself. After a quota increase, set e.g. 20.
+    Maximum concurrent Lambda instances. -1 = no reservation: new accounts have a concurrency quota of 10, all of
+    which must stay unreserved. After a quota increase, set e.g. 50.
   EOT
   type        = number
   default     = -1

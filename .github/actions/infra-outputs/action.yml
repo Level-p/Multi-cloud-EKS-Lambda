@@ -1,7 +1,7 @@
 # Reads the Terraform outputs of infra/aws or infra/platform straight from their state in S3, so no registry
 # name, cluster name or URL has to be copied into GitHub by hand after a deployment.
 # Sets TF_OUT_<OUTPUT NAME> environment variables (non-sensitive single-line string outputs), e.g.
-#   aws: TF_OUT_ECR_REGISTRY, TF_OUT_CLUSTER_NAME, TF_OUT_COSIGN_KEY_URI, TF_OUT_WEB_URL, TF_OUT_INCIDENT_BLOG_URL,
+#   aws: TF_OUT_ECR_REGISTRY, TF_OUT_CLUSTER_NAME, TF_OUT_COSIGN_KEY_URI, TF_OUT_<SERVICE>_URL (shop, farm...),
 #        TF_OUT_MOBILE_API_URL, TF_OUT_LAMBDA_FUNCTION_NAME
 # Needs AWS credentials first.
 name: Infrastructure outputs

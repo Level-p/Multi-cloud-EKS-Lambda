@@ -1,0 +1,91 @@
+# Deploy one image of one service to one environment, GitOps style, and wait for the outcome:
+#   1. commit image.tag + image.digest to gitops/services/<service>/<environment>.yaml (Argo CD syncs it; the digest
+#      makes the manifest equal to what Kyverno pins, so there is no drift)
+#   2. end a failing sync of an OLDER commit that would hold this one back, ask Argo CD to fetch the commit now
+#   3. wait for the Rollout: the canary analysis (Prometheus) decides; an aborted canary fails the step
+# Needs: a checkout of main, AWS credentials, the aws stack's outputs (TF_OUT_*), contents: write.
+name: GitOps deploy
+description: Commit the image of one service and environment, then wait for Argo CD and the canary analysis
+inputs:
+  service:
+    description: accounts | farm | shop | incidents
+    required: true
+  environment:
+    description: staging | production
+    required: true
+  tag:
+    required: true
+  digest:
+    description: sha256:... of the image that was built and signed
+    required: true
+outputs:
+  sha:
+    description: The GitOps commit
+    value: ${{ steps.commit.outputs.sha }}
+runs:
+  using: composite
+  steps:
+    - name: Commit ${{ inputs.service }} ${{ inputs.tag }} to ${{ inputs.environment }}
+      id: commit
+      shell: bash
+      env:
+        SERVICE: ${{ inputs.service }}
+        TARGET_ENV: ${{ inputs.environment }}
+        TAG: ${{ inputs.tag }}
+        DIGEST: ${{ inputs.digest }}
+      run: |
+        set -euo pipefail
+        case "$DIGEST" in sha256:*) ;; *) echo "::error::No image digest from the build job"; exit 1 ;; esac
+        FILE="gitops/services/$SERVICE/$TARGET_ENV.yaml"
+        sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/download/v4.54.1/yq_linux_amd64 && sudo chmod +x /usr/local/bin/yq
+        git config user.name "github-actions[bot]"
+        git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+        # Pushes made with the GITHUB_TOKEN start no new workflow run; [skip ci] says so to readers too
+        for attempt in 1 2 3; do
+          git pull --ff-only origin main
+          yq -i '.image.tag = strenv(TAG) | .image.digest = strenv(DIGEST)' "$FILE"
+          if ! git commit -am "ci: deploy $SERVICE $TAG to $TARGET_ENV [skip ci]"; then
+            echo "already deployed"; echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          git push origin HEAD:main && { echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"; exit 0; }
+          echo "main moved on: retrying ($attempt/3)"; git reset --hard origin/main
+        done
+        echo "::error::Could not push the GitOps commit"; exit 1
+
+    - name: Wait for ${{ inputs.service }}-${{ inputs.environment }} (canary analysis decides)
+      shell: bash
+      env:
+        SERVICE: ${{ inputs.service }}
+        TARGET_ENV: ${{ inputs.environment }}
+        TAG: ${{ inputs.tag }}
+        GITOPS_SHA: ${{ steps.commit.outputs.sha }}
+      run: |
+        set -euo pipefail
+        APP="$SERVICE-$TARGET_ENV"; NS="$APP"; WORKLOAD="rollout/$SERVICE"   # Application = namespace = <service>-<env>
+        aws eks update-kubeconfig --region "$AWS_REGION" --name "$TF_OUT_CLUSTER_NAME" >/dev/null
+        # A sync of an OLDER commit that is failing and retrying (up to ~6 min of backoff) would hold back this
+        # commit: end it, the same way argocd app terminate-op does. A failing sync of THIS commit is left alone,
+        # so its error stays visible below.
+        read -r PHASE OP_REV RETRIES < <(kubectl get application "$APP" -n argocd -o \
+          jsonpath='{.status.operationState.phase} {.status.operationState.operation.sync.revision} {.status.operationState.retryCount}{"\n"}' || true) || true
+        if [ "${PHASE:-}" = "Running" ] && [ "${RETRIES:-0}" -gt 0 ] && [ -n "${OP_REV:-}" ] && [ "$OP_REV" != "$GITOPS_SHA" ]; then
+          echo "::notice::Ending a failing sync of the older commit ${OP_REV:0:7} so ${GITOPS_SHA:0:7} deploys now"
+          kubectl -n argocd patch application "$APP" --type merge -p '{"status":{"operationState":{"phase":"Terminating"}}}'
+        fi
+        # fetch the new commit now instead of at the next poll (3 min)
+        kubectl -n argocd annotate application "$APP" argocd.argoproj.io/refresh=normal --overwrite
+        for i in $(seq 1 50); do      # wait until Argo CD has applied the new image (tag@digest)
+          IMAGE=$(kubectl get "$WORKLOAD" -n "$NS" -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || true)
+          case "$IMAGE" in *":$TAG"|*":$TAG@"*) break ;; esac
+          echo "waiting for Argo CD to apply $TAG to $NS (current: ${IMAGE##*/})"
+          kubectl get application "$APP" -n argocd -o jsonpath='  argocd: {.status.sync.status} {.status.operationState.phase}: {.status.operationState.message}{"\n"}' || true
+          sleep 30
+        done
+        for i in $(seq 1 40); do      # Argo Rollouts: the canary analysis decides
+          PHASE=$(kubectl get "$WORKLOAD" -n "$NS" -o jsonpath='{.status.phase}')
+          echo "rollout phase: ${PHASE:-unknown}"
+          [ "$PHASE" = "Healthy" ] && { echo "Rolled out $SERVICE $TAG to $TARGET_ENV" | tee -a "$GITHUB_STEP_SUMMARY"; exit 0; }
+          [ "$PHASE" = "Degraded" ] && { echo "::error::Canary of $SERVICE in $TARGET_ENV aborted by the automated analysis (rolled back)"; exit 1; }
+          sleep 30
+        done
+        echo "::error::Rollout of $SERVICE in $TARGET_ENV did not finish in time (kubectl -n $NS describe rollout $SERVICE)"; exit 1

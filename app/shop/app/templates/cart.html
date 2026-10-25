@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block title %}Cart · AgriPulse{% endblock %}
+{% block content %}
+<h1>Your cart</h1>
+{% if error %}<p class="error">{{ error }}</p>{% endif %}
+<table>
+  <thead><tr><th>Item</th><th>Farm</th><th>Quantity</th><th>Price</th><th></th></tr></thead>
+  <tbody>
+  {% for l in lines %}
+    <tr>
+      <td><a href="/items/{{ l.item.id }}">{{ l.item.title }}</a></td>
+      <td>{{ l.item.farm.farm_name if l.item.farm else "" }}</td>
+      <td>{{ l.quantity }} {{ l.item.unit }}</td>
+      <td>{{ "%.2f"|format(l.line_total) }} {{ l.item.currency }}</td>
+      <td><form method="post" action="/cart/remove"><input type="hidden" name="csrf" value="{{ csrf_token(request) }}">
+        <input type="hidden" name="listing_id" value="{{ l.item.id }}"><button class="secondary" type="submit">Remove</button></form></td>
+    </tr>
+  {% else %}
+    <tr><td colspan="5">Your cart is empty. <a href="/">Browse the shop</a>.</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% if lines %}
+<div class="card">
+  <p><strong>Total: {{ "%.2f"|format(total) }} {{ currency }}</strong> · pay on delivery. Items from different farms become one order per farm.</p>
+  <form method="post" action="/checkout" class="stack">
+    <input type="hidden" name="csrf" value="{{ csrf_token(request) }}">
+    <label>Delivery address <textarea name="delivery_address" required minlength="5" maxlength="300" rows="2"></textarea></label>
+    <label>Phone <input name="phone" required minlength="5" maxlength="30"></label>
+    <button type="submit">Place order</button>
+  </form>
+</div>
+{% endif %}
+{% endblock %}

@@ -20,6 +20,7 @@ terraform {
     aws     = { source = "hashicorp/aws", version = "~> 6.0" }
     random  = { source = "hashicorp/random", version = "~> 3.6" }
     archive = { source = "hashicorp/archive", version = "~> 2.7" }
+    tls     = { source = "hashicorp/tls", version = "~> 4.1" } # the sign-in token keys (modules/secrets)
   }
   # First of two stacks: aws -> platform (which reads this state's outputs)
   backend "s3" {

@@ -2,8 +2,8 @@
 # Prometheus, Alertmanager and Grafana (kube-prometheus-stack)
 #   Prometheus      scrapes the apps (/metrics), Valkey, the controllers; Argo Rollouts' canary analysis
 #                   queries it; Tempo writes span metrics into it (observability.tf)
-#   Alertmanager    EVERY alert -> Slack (the one alert channel); critical/warning also open an incident in the
-#                   incident blog
+#   Alertmanager    EVERY alert -> Slack (the one alert channel); critical/warning alerts of PRODUCTION also open
+#                   an incident in the production incident blog (which reports it to Slack with its timeline link)
 #   Grafana         Prometheus + Tempo + Loki, linked both ways; admin password from Secrets Manager;
 #                   public at https://grafana.<zone> (CloudFront + WAF + ALB, modules/k8s-edge)
 # EKS runs the control plane itself: etcd, the scheduler, the controller manager (and kube-proxy's
@@ -11,7 +11,7 @@
 # ---------------------------------------------------------------------------
 
 locals {
-  incident_webhook = "http://incident-blog.incident-response.svc:8080/webhooks/alertmanager"
+  incident_webhook = "http://incidents.incidents-production.svc:8080/webhooks/alertmanager"
 }
 
 resource "kubernetes_namespace_v1" "monitoring" {
@@ -87,8 +87,9 @@ resource "helm_release" "monitoring" {
           routes = [
             # Prometheus' own heartbeat alerts are not incidents
             { receiver = "null", matchers = ["alertname =~ \"Watchdog|InfoInhibitor\""] },
-            # Critical and warning alerts also open an incident in the incident blog (Detected state)...
-            { receiver = "incident-blog", matchers = ["severity =~ \"critical|warning\""], continue = true },
+            # Critical and warning alerts of production (and of the platform itself) also open an incident in the
+            # production incident blog (Detected state); staging alerts only go to Slack...
+            { receiver = "incident-blog", matchers = ["severity =~ \"critical|warning\"", "namespace !~ \".*-staging\""], continue = true },
             # ...and EVERY alert (critical, warning, info) reaches people in Slack, with its resolution
             { receiver = "slack" },
           ]

@@ -5,7 +5,7 @@ variable "name" {
 variable "repositories" {
   description = "One ECR repository per image: <name>/<repository>"
   type        = list(string)
-  default     = ["web", "incident-blog"]
+  default     = ["accounts", "farm", "shop", "incidents"]
 }
 
 variable "deletion_protection" {

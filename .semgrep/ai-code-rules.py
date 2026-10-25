@@ -43,13 +43,13 @@ def tls(url):
     httpx.get(url)
 
 
-def sql(db, patient_id):
+def sql(db, listing_id):
     # ruleid: ai-sql-built-with-strings
-    db.execute(f"SELECT * FROM patients WHERE id = '{patient_id}'")
+    db.execute(f"SELECT * FROM listings WHERE id = '{listing_id}'")
     # ruleid: ai-sql-built-with-strings
-    db.execute(text(f"DELETE FROM readings WHERE id = {patient_id}"))
+    db.execute(text(f"DELETE FROM orders WHERE id = {listing_id}"))
     # ok: ai-sql-built-with-strings
-    db.execute(text("SELECT * FROM patients WHERE id = :id"), {"id": patient_id})
+    db.execute(text("SELECT * FROM listings WHERE id = :id"), {"id": listing_id})
 
 
 # ruleid: ai-hardcoded-secret
@@ -76,11 +76,11 @@ def check_token(token, expected_token):
     return hmac.compare_digest(token.encode(), expected_token.encode())
 
 
-def log_patient(log, patient):
-    # ruleid: ai-phi-in-logs
-    log.info("admitted", extra={"name": patient.name})
-    # ok: ai-phi-in-logs
-    log.info("admitted", extra={"patient_id": str(patient.id)})
+def log_order(log, buyer):
+    # ruleid: ai-personal-data-in-logs
+    log.info("order placed", extra={"name": buyer.name})
+    # ok: ai-personal-data-in-logs
+    log.info("order placed", extra={"buyer_id": str(buyer.id)})
 
 
 def llm_runs_code(client):

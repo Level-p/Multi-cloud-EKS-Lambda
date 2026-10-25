@@ -1,33 +1,32 @@
 # DAST: OWASP ZAP
 
-SAST reads the code. **DAST attacks the running application.** Each AgriPulse workflow scans its
-app twice:
+SAST reads the code. **DAST attacks the running service.** Each AgriPulse pipeline scans its service twice:
 
 | Stage | Target | Scan |
 |---|---|---|
-| `dast` (every PR and main run, before build) | The app started on the runner: web / incident-blog with uvicorn + SQLite and `DEV_USER` in place of oauth2-proxy; mobile-backend's real request handler behind `mobile_local.py` (API Gateway stand-in, SQLite for PostgreSQL, moto for S3) | **Full** (passive + active), every OpenAPI operation and every form |
-| `dast-production` (after observe / deploy) | The public URLs, read from the Terraform state (`web_url`, `incident_blog_url`, `mobile_api_url`) | **Baseline** (passive, unauthenticated): TLS, headers after CloudFront (AWS WAF), sign-in redirects and cookies, 401s on protected routes, CORS, error pages |
+| `dast` (every PR and main run, before build) | The service started on the runner by `start-service.sh`: uvicorn + SQLite, a throwaway RSA key pair and a **real signed token** (no test-user switch exists in the code). The shop also gets a Valkey container and the farm service it calls. The mobile backend: the real gateway handler behind `mobile_local.py` (API Gateway stand-in, echo services) | **Full** (passive + active), every OpenAPI operation and every form |
+| `dast-production` (after the production rollout) | The public URLs, read from the Terraform state (`<service>_url`, `mobile_api_url`) | **Baseline** (passive, unauthenticated): TLS, headers after CloudFront (AWS WAF), the sign-in redirect and the session cookie's flags, 401s on protected routes, CORS, error pages |
 
 | File | What it is |
 |---|---|
-| `zap/ci-full.yaml`, `zap/prod-baseline.yaml` | ZAP Automation Framework plans (one pair for all three apps) |
-| `export_openapi.py` | Writes the FastAPI app's OpenAPI document from its code (the apps serve none in production) and seeds one record through the app's own form, so `/farms/1` and `/incidents/1` exist |
-| `openapi/mobile.yaml` | The mobile API contract (API Gateway REST -> Lambda) |
-| `mobile_local.py` | API Gateway + Lambda handler + SQLite + S3 (moto) on the runner, no AWS account needed |
+| `zap/ci-full.yaml`, `zap/prod-baseline.yaml` | ZAP Automation Framework plans (one pair for every service) |
+| `start-service.sh` | Starts one service for the scan and exports `DAST_TOKEN` (masked) |
+| `export_openapi.py` | Writes the service's OpenAPI document from its code (the services serve none in production) and seeds records through its own API, so `/api/listings/1`, `/api/orders/1` and `/incidents/1` exist |
+| `openapi/mobile.yaml` | The mobile API contract (API Gateway REST -> the gateway Lambda) |
+| `mobile_local.py` | API Gateway + the gateway handler + stand-in services on the runner, no AWS account needed |
 | `run-zap.sh` | Runs a plan in the digest-pinned `ghcr.io/zaproxy/zaproxy:2.17.0`, then the gate; GitHub Actions annotations and run summary |
 | `zap_gate.py`, `zap-policy.json` | Pass/fail; reviewed, expiring exceptions; JUnit XML and a Markdown summary (on the run's summary page) |
 | `tests/` | Unit tests for the gate |
 
-Action: `.github/actions/dast-zap`. Reports: the `zap-<app>-<mode>-<attempt>` artifact of each run.
-Nothing to configure: the production URLs come from the Terraform outputs (`.github/actions/infra-outputs`).
+Action: `.github/actions/dast-zap`. Reports: the `zap-<service>-<mode>-<attempt>` artifact of each run.
+While the repository variable `SECURITY_GATES` is not `enforce`, findings are reported as warnings and do not fail
+the run (the scans still run and upload their reports).
 
-## Triage example (from the first scan)
+## Triage
 
-ZAP reported **SQL Injection (High)** on `GET /api/prices?crop=%`. Reproduced with curl:
-`crop=%` gives `400 invalid crop` (rejected by the allow-list regex), and `crop=XYZABCDEFGHIJ` gives `200 {"prices": []}`.
-ZAP's boolean check saw two different responses and took that as injection. The query is a bound
-SQLAlchemy parameter (`MarketPrice.crop == crop`) with no `LIKE`, so it is a **false positive**, recorded in
-`zap/ci-full.yaml` as a narrow `alertFilter` (rule, URL, parameter, attack) with this reasoning.
+A finding that turns out to be a false positive gets a narrow `alertFilter` in `zap/ci-full.yaml` (rule, URL,
+parameter, attack) with the reasoning in a comment, reviewed in the PR like code. A real finding that cannot be fixed
+at once gets a reviewed, expiring exception in `zap-policy.json` (owner, reason, at most 180 days).
 
-An authenticated production scan would need a dedicated test identity in both Cognito pools
-(and an exclusion of write operations); add it only with the security team's agreement.
+An authenticated production scan would need a dedicated test account in the production accounts service and an
+exclusion of every write operation; add it only with the security team's agreement.

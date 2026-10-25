@@ -4,7 +4,7 @@
 #
 #   app/dast/run-zap.sh <plan> <app> <target-url> [spec-file-in-dast/openapi]
 #     plan   ci-full | prod-baseline
-#     app    web | incident-blog | mobile-backend
+#     app    accounts | farm | shop | incidents | mobile-backend
 #     env    FAIL_ON (optional: low | medium | high; default from app/dast/zap-policy.json)
 #            SPEC_SUBST (optional: "PLACEHOLDER=value" applied to the spec before the scan)
 # Output in app/dast/reports/: zap-report.{json,sarif,html}, zap-junit.xml, zap-summary.md.
@@ -33,7 +33,7 @@ chmod -R a+rwX reports openapi   # the container runs as uid 1000 ("zap")
 
 set +e
 docker run --rm --network host -v "$PWD:/zap/wrk/dast:rw" \
-  -e TARGET_URL="$TARGET_URL" -e DAST_DIR=/zap/wrk/dast -e SPEC="$SPEC" -e APP="$APP" \
+  -e TARGET_URL="$TARGET_URL" -e DAST_DIR=/zap/wrk/dast -e SPEC="$SPEC" -e APP="$APP" -e DAST_TOKEN="${DAST_TOKEN:-}" \
   "$ZAP_IMAGE" zap.sh -cmd -port 18080 -autorun "/zap/wrk/dast/zap/${PLAN}.yaml" 2>&1 | tee reports/zap.log
 ZAP_EXIT=${PIPESTATUS[0]}
 set -e

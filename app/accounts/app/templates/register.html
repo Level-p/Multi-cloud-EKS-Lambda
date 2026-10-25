@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %}Register · AgriPulse{% endblock %}
+{% block content %}
+<div class="card">
+  <h1>Create your account</h1>
+  {% if error %}<p class="error">{{ error }}</p>{% endif %}
+  <form method="post" action="/register" class="stack">
+    <input type="hidden" name="csrf" value="{{ csrf_token(request) }}">
+    <input type="hidden" name="next" value="{{ next }}">
+    <label>I want to
+      <select name="role">
+        <option value="buyer" {% if role == "buyer" %}selected{% endif %}>buy fresh produce and farm resources</option>
+        <option value="farmer" {% if role == "farmer" %}selected{% endif %}>sell from my farm and keep farm records</option>
+      </select>
+    </label>
+    <label>Full name <input name="name" required minlength="2" maxlength="100" autocomplete="name"></label>
+    <label>E-mail <input name="email" type="email" required maxlength="254" autocomplete="email"></label>
+    <label>Phone (optional) <input name="phone" maxlength="30" autocomplete="tel"></label>
+    <label>Password (at least 10 characters) <input name="password" type="password" required minlength="10" maxlength="128" autocomplete="new-password"></label>
+    <button type="submit">Create account</button>
+  </form>
+  <p class="muted">Already registered? <a href="/login?next={{ next|urlencode }}">Sign in</a>. The same account works in the AgriPulse mobile app.</p>
+</div>
+{% endblock %}
