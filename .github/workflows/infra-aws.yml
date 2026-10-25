@@ -1,6 +1,6 @@
 # ---------------------------------------------------------------------------
 # AWS infrastructure (infra/aws, composed of infra/modules/*): VPC, EKS, RDS PostgreSQL (Multi-AZ), ECR + Cosign
-# KMS key, S3 + GuardDuty, Secrets Manager, API Gateway + Lambda, ONE WAF on three CloudFront
+# KMS key, S3 + GuardDuty, Secrets Manager, API Gateway + Lambda, ONE WAF on the ALB and API Gateway, CloudFront for the S3 images,
 # distributions, ALB, Route 53 / ACM, EventBridge -> Slack
 #   Pull request  -> security scans + terraform plan + preflight (values checked with AWS's APIs)
 #   Push to main  -> the same, then apply EXACTLY that plan after approval (environment agripulse-infrastructure)

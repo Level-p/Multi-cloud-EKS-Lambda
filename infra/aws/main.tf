@@ -8,7 +8,7 @@
 #   storage      S3 media bucket (listing photos) + GuardDuty malware scanning
 #   secrets      app secrets in Secrets Manager, one set per environment (token keys, CSRF, internal tokens)
 #   mobile-api   API Gateway + Lambda: the mobile app's gateway to the production services
-#   edge         ONE WAF web ACL on three CloudFront distributions (services, mobile API, images) + ALB + DNS
+#   edge         ONE WAF web ACL (regional) on the ALB and the mobile API; CloudFront for the S3 images only; DNS
 #   monitoring   AWS events Prometheus cannot see (GuardDuty malware, RDS failover) -> EventBridge -> Slack.
 #                Every other alert is a Prometheus rule in EKS (OpenTelemetry + CloudWatch via YACE) -> Slack
 # In-cluster software (controllers, observability, Argo CD, Kyverno, the databases' users) is the second stack: ../platform.
@@ -43,12 +43,6 @@ locals {
 }
 
 data "aws_caller_identity" "current" {}
-
-# CloudFront sends this header to the ALB and API Gateway; they refuse requests without it
-resource "random_password" "origin_verify" {
-  length  = 48
-  special = false
-}
 
 module "network" {
   source       = "../modules/network"
@@ -155,11 +149,10 @@ module "mobile_api" {
   source                = "../modules/mobile-api"
   name                  = var.name
   service_urls          = { for s in ["accounts", "farm", "shop"] : s => "https://${local.deployments["${s}-production"].host}" }
-  origin_verify_secret  = random_password.origin_verify.result
   mobile_gateway_secret = module.secrets.mobile_gateway_secret
 }
 
-# ---------------- edge: one WAF, three CloudFront distributions ----------------
+# ---------------- edge: ALB + WAF, the mobile API's domain, CloudFront for the images, DNS ----------------
 module "edge" {
   source = "../modules/edge"
   providers = {
@@ -177,9 +170,9 @@ module "edge" {
   media_bucket                      = module.storage.bucket
   media_bucket_arn                  = module.storage.bucket_arn
   media_bucket_regional_domain_name = module.storage.bucket_regional_domain_name
-  api_invoke_domain                 = module.mobile_api.invoke_domain
+  api_rest_api_id                   = module.mobile_api.rest_api_id
   api_stage_name                    = module.mobile_api.stage_name
-  origin_verify_secret              = random_password.origin_verify.result
+  api_stage_arn                     = module.mobile_api.stage_arn
   mobile_gateway_secret             = module.secrets.mobile_gateway_secret
   waf_rate_limit                    = var.waf_rate_limit
   deletion_protection               = var.deletion_protection

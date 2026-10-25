@@ -1,5 +1,5 @@
 apiVersion: v2
 name: platform-edge
-description: TargetGroupBindings that put Argo CD and Grafana behind the AgriPulse edge (CloudFront + WAF + ALB)
+description: TargetGroupBindings that put Argo CD and Grafana behind the AgriPulse edge (ALB + WAF)
 type: application
 version: 1.0.0

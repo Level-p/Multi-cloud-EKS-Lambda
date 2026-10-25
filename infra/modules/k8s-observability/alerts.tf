@@ -107,7 +107,7 @@ locals {
             expr        = "sum(aws_applicationelb_request_count_sum) < 0.3 * sum(aws_applicationelb_request_count_sum offset 1w) and sum(aws_applicationelb_request_count_sum offset 1w) > 100"
             for         = "30m"
             labels      = merge(local.aws, { severity = "warning" })
-            annotations = { summary = "Web traffic is below 30 % of the same time last week (sign-in broken, DNS, CloudFront?)." }
+            annotations = { summary = "Web traffic is below 30 % of the same time last week (sign-in broken, DNS, the ALB or the WAF?)." }
           },
           # ---- mobile API: API Gateway + Lambda ----
           {

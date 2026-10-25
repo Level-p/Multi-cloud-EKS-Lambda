@@ -1,10 +1,14 @@
-output "invoke_domain" {
-  description = "<api id>.execute-api.<region>.amazonaws.com: CloudFront's origin"
-  value       = "${aws_api_gateway_rest_api.mobile.id}.execute-api.${data.aws_region.current.region}.amazonaws.com"
+output "rest_api_id" {
+  value = aws_api_gateway_rest_api.mobile.id
 }
 
 output "stage_name" {
   value = aws_api_gateway_stage.prod.stage_name
+}
+
+output "stage_arn" {
+  description = "The WAF is attached to it (modules/edge)"
+  value       = aws_api_gateway_stage.prod.arn
 }
 
 output "lambda_function_name" {

@@ -29,6 +29,6 @@ variable "git_revision" {
 }
 
 variable "argocd_host" {
-  description = "Public host name of Argo CD (argocd.<zone>, served through CloudFront + WAF + the ALB)"
+  description = "Public host name of Argo CD (argocd.<zone>, served through the ALB + WAF)"
   type        = string
 }

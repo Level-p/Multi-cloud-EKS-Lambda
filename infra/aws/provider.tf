@@ -5,7 +5,7 @@ provider "aws" {
   }
 }
 
-# CloudFront-scope WAF, its log group and CloudFront certificates must be created in us-east-1
+# CloudFront's certificate (the media distribution) must be created in us-east-1
 provider "aws" {
   alias  = "us_east_1"
   region = "us-east-1"

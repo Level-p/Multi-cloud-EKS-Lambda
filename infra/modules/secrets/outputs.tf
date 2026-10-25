@@ -16,10 +16,6 @@ output "slack_webhook_secret_arn" {
   value = aws_secretsmanager_secret.slack_webhook.arn
 }
 
-output "grafana_password_secret_arn" {
-  value = aws_secretsmanager_secret.generated["platform/grafana-admin-password"].arn
-}
-
 output "mobile_gateway_secret" {
   description = "X-Mobile-Gateway: the mobile API Lambda sends it, the WAF exempts it from the per-IP rate limit"
   value       = random_password.this["platform/mobile-gateway-secret"].result

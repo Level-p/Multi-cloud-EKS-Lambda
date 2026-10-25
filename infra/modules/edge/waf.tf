@@ -1,7 +1,7 @@
 # ---------------------------------------------------------------------------
-# ONE AWS WAF web ACL (CloudFront scope) in front of everything public: the same rules protect the static
-# images, the web app, the incident blog and the mobile API (cloudfront.tf attaches it to all three
-# distributions).
+# ONE AWS WAF web ACL (regional, eu-west-2) in front of everything that is not a static image: the same rules
+# protect every service in both environments, Argo CD and Grafana (the ALB) and the mobile API (the API Gateway
+# stage). The images on CloudFront are read-only cached S3 objects.
 #
 #   AWSManagedRulesCommonRuleSet          OWASP Top 10 basics: XSS, LFI/RFI, bad paths, oversize headers
 #   AWSManagedRulesSQLiRuleSet            SQL injection in the query string, body, cookies and URI
@@ -12,7 +12,7 @@
 #   block-scripted-sign-in                curl/wget/python on the sign-in and registration endpoints (credential
 #                                         stuffing, fake sign-ups)
 # The apps still validate everything and only use bound SQL parameters (defence in depth).
-# Blocked and counted requests are logged to CloudWatch (us-east-1).
+# Blocked and counted requests are logged to CloudWatch.
 # ---------------------------------------------------------------------------
 
 locals {
@@ -21,9 +21,8 @@ locals {
 }
 
 resource "aws_wafv2_regex_pattern_set" "scripted_clients" {
-  provider = aws.us_east_1
-  name     = "${var.name}-scripted-clients"
-  scope    = "CLOUDFRONT"
+  name  = "${var.name}-scripted-clients"
+  scope = "REGIONAL"
   regular_expression {
     regex_string = "(curl|wget|python-requests|go-http-client|scrapy|httpclient)"
   }
@@ -31,18 +30,16 @@ resource "aws_wafv2_regex_pattern_set" "scripted_clients" {
 
 # The accounts service's sign-in, registration and token endpoints (web forms and the mobile app's API)
 resource "aws_wafv2_regex_pattern_set" "sign_in_paths" {
-  provider = aws.us_east_1
-  name     = "${var.name}-sign-in-paths"
-  scope    = "CLOUDFRONT"
+  name  = "${var.name}-sign-in-paths"
+  scope = "REGIONAL"
   regular_expression {
     regex_string = "^/(login|register|api/token|api/register)/?$"
   }
 }
 
 resource "aws_wafv2_web_acl" "this" {
-  provider = aws.us_east_1
-  name     = "${var.name}-edge"
-  scope    = "CLOUDFRONT"
+  name  = "${var.name}-edge"
+  scope = "REGIONAL"
 
   default_action {
     allow {}
@@ -227,13 +224,11 @@ resource "aws_wafv2_web_acl" "this" {
 
 # Log group names for WAF must start with aws-waf-logs-, in the web ACL's region
 resource "aws_cloudwatch_log_group" "waf" {
-  provider          = aws.us_east_1
   name              = "aws-waf-logs-${var.name}-edge"
   retention_in_days = 30
 }
 
 resource "aws_wafv2_web_acl_logging_configuration" "this" {
-  provider                = aws.us_east_1
   resource_arn            = aws_wafv2_web_acl.this.arn
   log_destination_configs = [aws_cloudwatch_log_group.waf.arn]
 
@@ -271,4 +266,14 @@ resource "aws_wafv2_web_acl_logging_configuration" "this" {
       name = "x-mobile-gateway"
     }
   }
+}
+
+resource "aws_wafv2_web_acl_association" "alb" {
+  resource_arn = aws_lb.web.arn
+  web_acl_arn  = aws_wafv2_web_acl.this.arn
+}
+
+resource "aws_wafv2_web_acl_association" "api" {
+  resource_arn = var.api_stage_arn
+  web_acl_arn  = aws_wafv2_web_acl.this.arn
 }

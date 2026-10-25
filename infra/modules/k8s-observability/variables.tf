@@ -19,16 +19,12 @@ variable "webhook_token_secret_arn" {
   type        = string
 }
 
-variable "grafana_password_secret_arn" {
-  type = string
-}
-
 variable "slack_webhook_secret_arn" {
   description = "Secrets Manager secret with the Slack incoming webhook (created by infra/aws): every alert goes there"
   type        = string
 }
 
 variable "grafana_host" {
-  description = "Public host name of Grafana (grafana.<zone>, served through CloudFront + WAF + the ALB)"
+  description = "Public host name of Grafana (grafana.<zone>, served through the ALB + WAF)"
   type        = string
 }

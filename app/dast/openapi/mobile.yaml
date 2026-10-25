@@ -1,5 +1,5 @@
 openapi: 3.0.3
-# AgriPulse mobile API (CloudFront -> API Gateway REST -> the gateway Lambda -> the services).
+# AgriPulse mobile API (API Gateway REST + AWS WAF -> the gateway Lambda -> the services).
 # Keep in step with ROUTES in app/mobile-backend/agripulse_mobile/api.py. The services check the bearer token.
 info:
   title: AgriPulse mobile API

@@ -6,7 +6,7 @@
                  service's CSRF_SECRET): another site can neither read the cookie nor guess the token
   LoginRequired  HTML pages send visitors without a session to the accounts sign-in page
 
-Edge protection (bots, SQL injection, rate limits) is AWS WAF on CloudFront; the services still validate every
+Edge protection (bots, SQL injection, rate limits) is AWS WAF on the ALB; the services still validate every
 input with Pydantic and only use bound SQL parameters.
 """
 

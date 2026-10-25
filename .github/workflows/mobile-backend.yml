@@ -1,5 +1,5 @@
 # ---------------------------------------------------------------------------
-# AgriPulse mobile backend -> AWS Lambda behind API Gateway, behind CloudFront + AWS WAF (https://api.<zone>):
+# AgriPulse mobile backend -> AWS Lambda behind API Gateway + AWS WAF (https://api.<zone>):
 # the mobile app's gateway to the production services (accounts, farm, shop)
 #   test             pytest (real API Gateway proxy events, a local stand-in for the services)
 #   security         Gitleaks, Semgrep (+ AI-code rules), pip-audit, Checkov on the Lambda/API module

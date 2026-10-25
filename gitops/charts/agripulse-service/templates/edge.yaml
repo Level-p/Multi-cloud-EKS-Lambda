@@ -1,6 +1,6 @@
 # The public way in: Terraform owns the ALB and the target group of this service and environment (infra/modules/edge);
 # this TargetGroupBinding asks the AWS Load Balancer Controller to keep the target group filled with the IPs of this
-# service's pods (target type ip: straight to the pods). CloudFront + AWS WAF are in front of the ALB.
+# service's pods (target type ip: straight to the pods). AWS WAF is on the ALB.
 {{- $name := include "svc.name" . }}
 {{- if not .Values.aws.targetGroupArn }}
 {{- fail "aws.targetGroupArn is required (Terraform passes it through the Argo CD Application)" }}
@@ -24,7 +24,7 @@ spec:
   podSelector: {}
   policyTypes: [Ingress]
 ---
-# The service's pods: from the ALB (its addresses in the public subnets; it admits CloudFront only), from Prometheus,
+# The service's pods: from the ALB (its addresses in the public subnets), from Prometheus,
 # and from the namespaces that call this service's internal API (e.g. the shop calling the farm service)
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy

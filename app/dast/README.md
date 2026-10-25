@@ -5,7 +5,7 @@ SAST reads the code. **DAST attacks the running service.** Each AgriPulse pipeli
 | Stage | Target | Scan |
 |---|---|---|
 | `dast` (every PR and main run, before build) | The service started on the runner by `start-service.sh`: uvicorn + SQLite, a throwaway RSA key pair and a **real signed token** (no test-user switch exists in the code). The shop also gets a Valkey container and the farm service it calls. The mobile backend: the real gateway handler behind `mobile_local.py` (API Gateway stand-in, echo services) | **Full** (passive + active), every OpenAPI operation and every form |
-| `dast-production` (after the production rollout) | The public URLs, read from the Terraform state (`<service>_url`, `mobile_api_url`) | **Baseline** (passive, unauthenticated): TLS, headers after CloudFront (AWS WAF), the sign-in redirect and the session cookie's flags, 401s on protected routes, CORS, error pages |
+| `dast-production` (after the production rollout) | The public URLs, read from the Terraform state (`<service>_url`, `mobile_api_url`) | **Baseline** (passive, unauthenticated): TLS, headers through the ALB (AWS WAF), the sign-in redirect and the session cookie's flags, 401s on protected routes, CORS, error pages |
 
 | File | What it is |
 |---|---|

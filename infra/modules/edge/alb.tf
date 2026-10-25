@@ -1,19 +1,13 @@
 # ---------------------------------------------------------------------------
-# The origin of the EKS apps: one ALB in the public subnets that only CloudFront can use
-#   - its security group admits HTTPS from CloudFront's origin-facing address ranges only (AWS managed prefix list)
-#   - every listener rule also requires X-Origin-Verify (a secret only CloudFront sends): another CloudFront
-#     distribution, or anyone who finds the ALB, gets a 403
+# The public entrance of the EKS apps: one internet-facing ALB in the public subnets, with the WAF (waf.tf)
+#   - HTTPS on 443 (TLS 1.2+); port 80 only redirects to HTTPS
 #   - host-based rules, one target group each: every service in each environment (shop.<zone>, shop.staging.<zone>,
 #     ...: AgriPulse accounts, signed tokens checked by the services), argocd.<zone> and grafana.<zone> (their own
-#     sign-in: Argo CD admin, Grafana admin from Secrets Manager)
+#     sign-in: kubectl get secret, see infra/platform outputs). Any other host name: 404
 # Terraform owns the ALB, its listener, rules, certificate and target groups. Inside EKS the AWS Load Balancer
 # Controller only keeps each target group filled with pod IPs (TargetGroupBindings: one in each app chart, the
 # platform tools' in infra/modules/k8s-edge), so destroying the cluster never leaves an orphaned load balancer.
 # ---------------------------------------------------------------------------
-
-data "aws_ec2_managed_prefix_list" "cloudfront" {
-  name = "com.amazonaws.global.cloudfront.origin-facing"
-}
 
 locals {
   alb_apps  = var.alb_routes
@@ -22,17 +16,20 @@ locals {
 
 resource "aws_security_group" "alb" {
   name        = "${var.name}-alb"
-  description = "HTTPS from CloudFront only; the ALB reaches only the service pods"
+  description = "HTTPS and the HTTP redirect from the internet; the ALB reaches only the service pods"
   vpc_id      = var.vpc_id
   tags        = { Name = "${var.name}-alb" }
 }
 
-resource "aws_vpc_security_group_ingress_rule" "alb_from_cloudfront" {
+# Public on purpose: the services, Argo CD and Grafana are reached here directly (the WAF filters every request)
+resource "aws_vpc_security_group_ingress_rule" "alb_from_internet" {
+  #checkov:skip=CKV_AWS_260:Port 80 only answers with a redirect to HTTPS
+  for_each          = toset(["80", "443"])
   security_group_id = aws_security_group.alb.id
-  description       = "HTTPS from the CloudFront origin-facing servers" # EC2 rejects apostrophes here
-  prefix_list_id    = data.aws_ec2_managed_prefix_list.cloudfront.id
-  from_port         = 443
-  to_port           = 443
+  description       = each.key == "443" ? "HTTPS from the internet" : "HTTP from the internet (redirected to HTTPS)" # EC2 rejects apostrophes here
+  cidr_ipv4         = "0.0.0.0/0"
+  from_port         = tonumber(each.key)
+  to_port           = tonumber(each.key)
   ip_protocol       = "tcp"
 }
 
@@ -87,20 +84,34 @@ resource "aws_lb_target_group" "app" {
   }
 }
 
+resource "aws_lb_listener" "http" {
+  load_balancer_arn = aws_lb.web.arn
+  port              = 80
+  protocol          = "HTTP"
+  default_action {
+    type = "redirect"
+    redirect {
+      protocol    = "HTTPS"
+      port        = "443"
+      status_code = "HTTP_301"
+    }
+  }
+}
+
 resource "aws_lb_listener" "https" {
   load_balancer_arn = aws_lb.web.arn
   port              = 443
   protocol          = "HTTPS"
   ssl_policy        = "ELBSecurityPolicy-TLS13-1-2-2021-06"
-  certificate_arn   = aws_acm_certificate_validation.alb.certificate_arn
+  certificate_arn   = aws_acm_certificate_validation.regional.certificate_arn
 
-  # Without the origin header, or for any other host name: 403
+  # Any host name that is not one of ours (e.g. the ALB's own DNS name): 404
   default_action {
     type = "fixed-response"
     fixed_response {
       content_type = "application/json"
-      message_body = "{\"error\":\"forbidden\"}"
-      status_code  = "403"
+      message_body = "{\"error\":\"not found\"}"
+      status_code  = "404"
     }
   }
 }
@@ -113,13 +124,6 @@ resource "aws_lb_listener_rule" "app" {
   condition {
     host_header {
       values = [each.value.host]
-    }
-  }
-
-  condition {
-    http_header {
-      http_header_name = "X-Origin-Verify"
-      values           = [var.origin_verify_secret]
     }
   }
 

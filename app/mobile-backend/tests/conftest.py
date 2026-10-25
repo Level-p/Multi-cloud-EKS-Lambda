@@ -9,8 +9,6 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))   # app/mobile-backend: agripulse_mobile
 
-ORIGIN_SECRET = "origin-secret-for-tests"
-
 
 class Upstream(BaseHTTPRequestHandler):
     """Stands in for accounts, farm and shop: answers with what it received, or a status chosen by the path."""
@@ -50,6 +48,5 @@ def env(upstream, monkeypatch):
     Upstream.seen.clear()
     for name in ("ACCOUNTS_URL", "FARM_URL", "SHOP_URL"):
         monkeypatch.setenv(name, upstream)
-    monkeypatch.setenv("ORIGIN_VERIFY_SECRET", ORIGIN_SECRET)
     monkeypatch.setenv("MOBILE_GATEWAY_SECRET", "gateway-secret")
     yield Upstream.seen

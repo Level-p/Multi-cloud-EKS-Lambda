@@ -19,7 +19,7 @@ gets the same signed image after approval, each release as a canary that Prometh
 | | |
 |---|---|
 | Database | ONE **RDS PostgreSQL 18, `db.t3.micro`, Multi-AZ**; a database and an IAM-authenticated user per service and environment |
-| Edge | ONE **AWS WAF** (incl. SQL injection) on three CloudFront distributions; the ALB and API Gateway accept only CloudFront |
+| Edge | ONE **AWS WAF** (incl. SQL injection) on the ALB (every service, Argo CD, Grafana) and the mobile API; **CloudFront** serves the S3 images |
 | Observability | **OpenTelemetry** -> Tempo, Loki; **Prometheus** + **Grafana** (kube-prometheus-stack); CloudWatch metrics via YACE |
 | Alerting | **Slack only**: every alert; production alerts also open an incident, which the blog reports to Slack |
 | AIOps | **Claude** explains every failed pipeline run in Slack; anomaly alert rules; automated canary analysis; Semgrep rules for AI-written code |
@@ -47,8 +47,8 @@ gets the same signed image after approval, each release as a canary that Prometh
 | `https://media.mfon21.space` | listing photos (only uploads GuardDuty marked clean) |
 | `https://argocd.mfon21.space`, `https://grafana.mfon21.space` | Argo CD and Grafana (their own admin sign-in) |
 
-Staging: the same names under `staging.mfon21.space` (`shop.staging.mfon21.space`...). Every request passes AWS WAF and
-CloudFront first.
+Staging: the same names under `staging.mfon21.space` (`shop.staging.mfon21.space`...). Every request to a service, Argo CD,
+Grafana or the mobile API passes AWS WAF first; only `media.` is CloudFront (S3).
 
 ## Where the Claude (Anthropic) API key goes
 

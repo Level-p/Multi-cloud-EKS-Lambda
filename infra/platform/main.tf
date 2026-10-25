@@ -44,13 +44,12 @@ locals {
 }
 
 module "k8s_observability" {
-  source                      = "../modules/k8s-observability"
-  region                      = local.aws.region
-  app_namespaces              = keys(local.deployments)
-  webhook_token_secret_arn    = local.aws.webhook_token_secret_arn
-  grafana_password_secret_arn = local.aws.grafana_password_secret_arn
-  slack_webhook_secret_arn    = local.aws.slack_webhook_secret_arn
-  grafana_host                = lookup(local.aws.hosts, "grafana", "grafana.missing-run-infra-aws-first")
+  source                   = "../modules/k8s-observability"
+  region                   = local.aws.region
+  app_namespaces           = keys(local.deployments)
+  webhook_token_secret_arn = local.aws.webhook_token_secret_arn
+  slack_webhook_secret_arn = local.aws.slack_webhook_secret_arn
+  grafana_host             = lookup(local.aws.hosts, "grafana", "grafana.missing-run-infra-aws-first")
 }
 
 module "k8s_controllers" {
@@ -94,7 +93,7 @@ module "k8s_gitops" {
   depends_on = [module.k8s_controllers, module.k8s_policy, module.k8s_observability, module.k8s_database]
 }
 
-# Argo CD and Grafana behind the same CloudFront + WAF + ALB as the services (their own sign-in)
+# Argo CD and Grafana behind the same ALB + WAF as the services (their own sign-in)
 module "k8s_edge" {
   source = "../modules/k8s-edge"
   bindings = [

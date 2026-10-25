@@ -1,13 +1,12 @@
-"""Local stand-in for CloudFront + API Gateway + the mobile gateway Lambda, so ZAP can scan the mobile backend in the
+"""Local stand-in for API Gateway + the mobile gateway Lambda, so ZAP can scan the mobile backend in the
 pipeline without an AWS account.
 
     PYTHONPATH=app/mobile-backend python app/dast/mobile_local.py      # http://127.0.0.1:8090
 
 * Every HTTP request goes to the real agripulse_mobile.api.handle(), the code the Lambda handler calls.
 * The services it calls (accounts, farm, shop) are a small echo server on 127.0.0.1:8091: the scan tests the
-  gateway itself (routing, the allow-list, size limits, the origin check, what it passes on), not the services,
+  gateway itself (routing, the allow-list, size limits, what it passes on), not the services,
   which have their own DAST scans.
-* No origin secret is configured, as if every request came through CloudFront.
 """
 import json
 import os
@@ -46,7 +45,7 @@ def make_handler(handle):
         sys_version = ""
 
         def _handle(self):
-            length = min(int(self.headers.get("Content-Length") or 0), 10 * 1024 * 1024)  # CloudFront body limit
+            length = min(int(self.headers.get("Content-Length") or 0), 10 * 1024 * 1024)  # API Gateway's body limit is 10 MB
             body = self.rfile.read(length) if length else b""
             parts = urlsplit(self.path)
             resp = handle(self.command, parts.path, dict(self.headers), body, query=parts.query)

@@ -1,5 +1,5 @@
 output "argocd_url" {
-  description = "Argo CD through CloudFront + WAF; user admin"
+  description = "Argo CD through the ALB + WAF; user admin"
   value       = "https://${local.aws.hosts["argocd"]}"
 }
 
@@ -8,12 +8,12 @@ output "argocd_password_command" {
 }
 
 output "grafana_url" {
-  description = "Grafana through CloudFront + WAF; user admin"
+  description = "Grafana through the ALB + WAF; user admin"
   value       = "https://${local.aws.hosts["grafana"]}"
 }
 
 output "grafana_password_command" {
-  value = "aws secretsmanager get-secret-value --secret-id ${local.aws.secret_prefix}/platform/grafana-admin-password --query SecretString --output text"
+  value = "kubectl -n monitoring get secret grafana-admin -o jsonpath='{.data.admin-password}' | base64 -d"
 }
 
 output "image_signature_mode" {

@@ -1,13 +1,13 @@
 # ---------------------------------------------------------------------------
-# Mobile API: CloudFront (WAF, modules/edge) -> API Gateway REST (throttling, access logs) -> Lambda alias "live"
-#             -> the production services (accounts, farm, shop) through CloudFront, with the user's own token
+# Mobile API: https://api.<zone> (API Gateway custom domain + WAF, modules/edge) -> API Gateway REST (throttling,
+#             access logs) -> Lambda alias "live" -> the production services (accounts, farm, shop) at their public
+#             URLs, through the WAF like any client, with the user's own token
 #
 # The Lambda owns no data and checks no passwords: it is the mobile app's gateway to the same services the web
 # uses, so every rule lives in one place. No VPC, no database: nothing to connect to but HTTPS.
 # The pipeline deploys new code as a new Lambda version and shifts the "live" alias with a canary (10 %,
 # CloudWatch check, then 100 % or rollback: .github/scripts/lambda_canary.sh), so Terraform ignores those fields.
-# CloudFront adds X-Origin-Verify; without it the Lambda answers 403 (except /health), so the
-# execute-api URL cannot be used to skip the WAF.
+# The default execute-api URL is switched off: api.<zone>, where the WAF is, is the only way in.
 # ---------------------------------------------------------------------------
 
 data "aws_caller_identity" "current" {}
@@ -49,8 +49,8 @@ resource "aws_iam_role_policy" "lambda" {
 
 resource "aws_lambda_function" "api" {
   #checkov:skip=CKV_AWS_116:Synchronous API calls: a dead-letter queue does not apply
-  #checkov:skip=CKV_AWS_173:Environment variables hold no secrets except the two edge header values (encrypted at rest by Lambda)
-  #checkov:skip=CKV_AWS_117:No VPC on purpose: the function only calls the public service endpoints (through CloudFront and the WAF)
+  #checkov:skip=CKV_AWS_173:Environment variables hold no secrets except the X-Mobile-Gateway value (encrypted at rest by Lambda)
+  #checkov:skip=CKV_AWS_117:No VPC on purpose: the function only calls the public service endpoints (through the WAF)
   function_name                  = "${var.name}-mobile-api"
   role                           = aws_iam_role.lambda.arn
   runtime                        = "python3.12"
@@ -69,7 +69,6 @@ resource "aws_lambda_function" "api" {
       FARM_URL              = var.service_urls["farm"]
       SHOP_URL              = var.service_urls["shop"]
       UPSTREAM_TIMEOUT      = "8"
-      ORIGIN_VERIFY_SECRET  = var.origin_verify_secret
       MOBILE_GATEWAY_SECRET = var.mobile_gateway_secret
     }
   }
@@ -103,8 +102,9 @@ resource "aws_lambda_alias" "live" {
 resource "aws_api_gateway_rest_api" "mobile" {
   name = "${var.name}-mobile"
   endpoint_configuration {
-    types = ["REGIONAL"] # CloudFront (modules/edge) is the edge
+    types = ["REGIONAL"] # the custom domain api.<zone> and the WAF are in modules/edge
   }
+  disable_execute_api_endpoint = true # no way around the WAF
 }
 
 resource "aws_api_gateway_resource" "health" {
@@ -161,7 +161,7 @@ resource "aws_api_gateway_deployment" "this" {
   rest_api_id = aws_api_gateway_rest_api.mobile.id
   triggers = {
     redeploy = sha1(jsonencode([aws_api_gateway_resource.proxy, aws_api_gateway_method.proxy, aws_api_gateway_method.health,
-    aws_api_gateway_integration.this]))
+    aws_api_gateway_integration.this, aws_api_gateway_rest_api.mobile.disable_execute_api_endpoint]))
   }
   lifecycle {
     create_before_destroy = true

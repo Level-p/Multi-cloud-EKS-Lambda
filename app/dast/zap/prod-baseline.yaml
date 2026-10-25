@@ -1,9 +1,9 @@
 # OWASP ZAP Automation Framework plan: BASELINE (passive, unauthenticated) scan of a deployed
 # AgriPulse endpoint, after the deployment stage:
-#   the services     https://<service>.<zone>: AWS WAF -> CloudFront -> ALB -> EKS (accounts, farm, shop, incidents)
-#   mobile-backend   https://api.<zone>: AWS WAF -> CloudFront -> API Gateway -> the gateway Lambda
+#   the services     https://<service>.<zone>: ALB + AWS WAF -> EKS (accounts, farm, shop, incidents)
+#   mobile-backend   https://api.<zone>: API Gateway + AWS WAF -> the gateway Lambda
 # Nothing is attacked and nothing is written. It proves what only the real edge can show: TLS and HTTPS redirects,
-# security headers after CloudFront, the sign-in redirect and the session cookie's flags, that protected routes
+# security headers through the ALB, the sign-in redirect and the session cookie's flags, that protected routes
 # answer 401/303 instead of data, CORS, error pages and server banners. An authenticated production scan would need
 # a dedicated test account and an exclusion of write operations: see app/dast/README.md.
 #

@@ -11,7 +11,7 @@
 #                      <service>-staging; the canary analysis decides                             (automatic)
 #   production         approval (environment agripulse-production), then the SAME signed image to
 #                      gitops/services/<service>/production.yaml and <service>-production
-#   dast-production    OWASP ZAP baseline (passive) of the public URL (AWS WAF -> CloudFront -> ALB)
+#   dast-production    OWASP ZAP baseline (passive) of the public URL (ALB + AWS WAF)
 #   diagnose           (only on failure) AI explanation of what broke (Claude)
 # Registry, cluster, signing key and URLs come from the Terraform state (.github/actions/infra-outputs).
 # ---------------------------------------------------------------------------

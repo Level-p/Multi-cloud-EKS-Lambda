@@ -167,7 +167,3 @@ output "slack_webhook_secret_arn" {
   description = "The Slack webhook every alert and incident report goes to"
   value       = module.secrets.slack_webhook_secret_arn
 }
-
-output "grafana_password_secret_arn" {
-  value = module.secrets.grafana_password_secret_arn
-}

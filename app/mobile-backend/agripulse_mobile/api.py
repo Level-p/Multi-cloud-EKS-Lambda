@@ -1,4 +1,4 @@
-"""AgriPulse mobile backend: https://api.<zone> (AWS WAF -> CloudFront -> API Gateway -> this Lambda).
+"""AgriPulse mobile backend: https://api.<zone> (API Gateway custom domain + AWS WAF -> this Lambda).
 
 A thin gateway for the mobile app, used by buyers and by farmers. It owns no data: every route is one call to the
 production service that owns it, with the user's own token, so the rules (who may see or change what) live in one
@@ -11,14 +11,13 @@ place, the services, for the web and the app alike.
   GET|PUT /farm/profile   GET|POST /farm/listings   PATCH|DELETE /farm/listings/{id}
   POST /farm/listings/{id}/photo   GET|POST /farm/activities                              -> farm
 
-Edge: CloudFront adds X-Origin-Verify (a secret only it and this function know); without it every route but
-/health answers 403, so the execute-api URL cannot be used to skip the WAF.
-The calls to the services go out through CloudFront and the WAF like any client's, with X-Mobile-Gateway (a
-second secret) so the per-IP rate limit does not treat all app users, who share this function's addresses, as one.
+Edge: the WAF is on the API Gateway stage, and the default execute-api URL is switched off, so api.<zone> is the
+only way in. The calls to the services go out to their public URLs, through the WAF like any client's, with
+X-Mobile-Gateway (a secret) so the per-IP rate limit does not treat all app users, who share this function's
+addresses, as one.
 Standard library only: nothing to patch, a tiny package.
 """
 
-import hmac
 import json
 import logging
 import os
@@ -72,14 +71,6 @@ def error(status: int, message: str) -> Response:
     return Response(status, {"detail": message})
 
 
-def origin_ok(headers: dict) -> bool:
-    expected = os.environ.get("ORIGIN_VERIFY_SECRET", "")
-    if not expected:   # the DAST stand-in and the tests run without CloudFront
-        return True
-    given = next((v for k, v in headers.items() if k.lower() == "x-origin-verify"), "")
-    return hmac.compare_digest(given.encode(), expected.encode())
-
-
 def header(headers: dict, name: str) -> str | None:
     return next((v for k, v in headers.items() if k.lower() == name), None)
 
@@ -130,8 +121,6 @@ def handle(method: str, path: str, headers: dict, body: bytes, query: str = "") 
     method = method.upper()
     if path == "/health" and method == "GET":
         return Response(200, {"status": "ok"})
-    if not origin_ok(headers):
-        return error(403, "forbidden")
     if len(body) > MAX_BODY_BYTES:
         return error(413, "request body too large")
     if len(query) > MAX_QUERY:

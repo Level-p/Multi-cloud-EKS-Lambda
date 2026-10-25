@@ -9,7 +9,7 @@ variable "dns_zone_name" {
 
 variable "alb_routes" {
   description = <<-EOT
-    Hosts EKS serves through CloudFront "app" and the ALB: key => { host, port (container port of the pods),
+    Hosts EKS serves through the ALB (Route 53 -> ALB + WAF): key => { host, port (container port of the pods),
     health (path without sign-in), priority (of the ALB rule: fixed, because a changed priority replaces the rule) }.
     One per service and environment (accounts, farm, shop, incidents x staging, production), plus Argo CD and Grafana.
   EOT
@@ -17,12 +17,12 @@ variable "alb_routes" {
 }
 
 variable "api_host" {
-  description = "The mobile API (CloudFront \"api\" -> API Gateway)"
+  description = "The mobile API (API Gateway custom domain + WAF -> Lambda)"
   type        = string
 }
 
 variable "media_host" {
-  description = "Static images (CloudFront \"media\" -> S3)"
+  description = "Static images (CloudFront -> S3)"
   type        = string
 }
 
@@ -57,19 +57,18 @@ variable "media_bucket_regional_domain_name" {
   type = string
 }
 
-variable "api_invoke_domain" {
-  description = "<api id>.execute-api.<region>.amazonaws.com"
+variable "api_rest_api_id" {
+  description = "The mobile API's REST API (mapped to api.<zone>)"
+  type        = string
+}
+
+variable "api_stage_arn" {
+  description = "The mobile API's stage: the WAF is attached to it"
   type        = string
 }
 
 variable "api_stage_name" {
   type = string
-}
-
-variable "origin_verify_secret" {
-  description = "Secret CloudFront sends as X-Origin-Verify to the ALB and to API Gateway"
-  type        = string
-  sensitive   = true
 }
 
 variable "waf_rate_limit" {

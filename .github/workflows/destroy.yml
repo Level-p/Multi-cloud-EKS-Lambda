@@ -7,7 +7,7 @@
 #             with their EBS volumes (nothing is left billing outside the cluster); everything else in the
 #             cluster is simply forgotten by Terraform: it goes with the cluster in the aws job
 #   aws       EKS, VPC, NAT, RDS PostgreSQL (no final snapshot unless deletion_protection), ALB, the WAF and
-#             the three CloudFront distributions, API Gateway + Lambda, ECR, KMS keys (7-day deletion window),
+#             the CloudFront distribution (images), API Gateway + Lambda, ECR, KMS keys (7-day deletion window),
 #             the S3 media bucket and its files, Secrets Manager, EventBridge -> Slack, the DNS records
 #
 # Kept: what infra/bootstrap.sh made (the S3 state bucket, the GitHub Actions role) and the Route 53 zone.

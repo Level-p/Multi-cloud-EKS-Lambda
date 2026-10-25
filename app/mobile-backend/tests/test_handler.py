@@ -2,15 +2,13 @@ import base64
 import json
 
 from agripulse_mobile import api, handler
-from conftest import ORIGIN_SECRET
 
 TOKEN = "Bearer header.payload.signature"
 
 
-def event(method, path, body=None, origin=ORIGIN_SECRET, auth=TOKEN, query=None, b64=False):
+def event(method, path, body=None, auth=TOKEN, query=None, b64=False):
     raw = json.dumps(body) if body is not None else None
-    headers = {"Content-Type": "application/json", **({"X-Origin-Verify": origin} if origin else {}),
-               **({"Authorization": auth} if auth else {})}
+    headers = {"Content-Type": "application/json", **({"Authorization": auth} if auth else {})}
     return {"resource": "/{proxy+}", "path": path, "httpMethod": method, "headers": headers,
             "multiValueQueryStringParameters": query, "requestContext": {"requestId": "r-1", "stage": "prod"},
             "body": base64.b64encode(raw.encode()).decode() if (raw and b64) else raw, "isBase64Encoded": b64}
@@ -47,17 +45,16 @@ def test_the_services_answer_is_returned_as_is(env):
     assert status == 401 and body == {"detail": "sign in required"}
 
 
-def test_without_cloudfronts_header_only_health_answers():
-    assert call("GET", "/catalog", origin=None)[0] == 403
-    assert call("GET", "/catalog", origin="guess")[0] == 403
-    assert call("GET", "/health", origin=None) == (200, {"status": "ok"})
+def test_health_answers_without_calling_a_service(env):
+    assert call("GET", "/health", auth=None) == (200, {"status": "ok"})
+    assert env == []
 
 
 def test_unknown_routes_methods_and_oversized_requests(env):
     assert call("GET", "/internal/listings/1/reserve")[0] == 404   # never a way to the internal API
     assert call("DELETE", "/catalog")[0] == 405
     assert call("GET", "/items/../../internal")[0] == 404
-    assert api.handle("POST", "/orders", {"X-Origin-Verify": ORIGIN_SECRET}, b"x" * (api.MAX_BODY_BYTES + 1)).status == 413
+    assert api.handle("POST", "/orders", {}, b"x" * (api.MAX_BODY_BYTES + 1)).status == 413
     assert env == []
 
 

@@ -7,12 +7,6 @@ variable "service_urls" {
   type        = map(string)
 }
 
-variable "origin_verify_secret" {
-  description = "Value CloudFront sends as X-Origin-Verify"
-  type        = string
-  sensitive   = true
-}
-
 variable "mobile_gateway_secret" {
   description = "Value the Lambda sends as X-Mobile-Gateway (exempt from the WAF's per-IP rate limit)"
   type        = string

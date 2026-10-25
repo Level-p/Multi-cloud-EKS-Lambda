@@ -8,8 +8,9 @@
 #   <name>/<env>/<service>/csrf-secret      form tokens of each service
 #   <name>/<env>/shared/internal-token      the shop's calls to the farm service's /internal/ API
 #   <name>/<env>/incidents/webhook-token    Alertmanager's calls to the incident blog
-#   <name>/platform/*                       Grafana admin password, the Slack webhook (every alert and incident report),
-#                                           the mobile gateway header (the Lambda and the WAF rate-limit rule)
+#   <name>/platform/*                       the Slack webhook (every alert and incident report), the mobile gateway
+#                                           header (the Lambda and the WAF rate-limit rule)
+# The Argo CD and Grafana admin passwords are NOT here: they live only in the cluster (kubectl get secret).
 # Staging and production have different keys: a token or cookie of one is useless in the other.
 # The PostgreSQL master password is NOT here: RDS manages it in its own secret (modules/database).
 # recovery_window_in_days = 0: a destroy deletes them at once, so a redeploy can reuse the names.
@@ -23,7 +24,7 @@ locals {
     { for p in setproduct(var.environments, var.services) : "${p[0]}/${p[1]}/csrf-secret" => 48 },
     { for e in var.environments : "${e}/shared/internal-token" => 48 },
     { for e in var.environments : "${e}/incidents/webhook-token" => 40 },
-    { "platform/grafana-admin-password" = 32, "platform/mobile-gateway-secret" = 48 },
+    { "platform/mobile-gateway-secret" = 48 },
   )
   key_pairs = merge(
     { for e in var.environments : "${e}/accounts/jwt-private-key" => tls_private_key.jwt[e].private_key_pem },
