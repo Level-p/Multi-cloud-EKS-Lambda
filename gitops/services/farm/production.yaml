@@ -1,5 +1,5 @@
 # Written by the pipeline after approval (GitHub environment agripulse-production): the same image staging ran
 image:
-  tag: initial
-  digest: ""
+  tag: r3-afeff0114328b146651b722c09ed178723389627
+  digest: "sha256:082ec3a5007c76ed39a7893182f26aa1392adcc9cdc4b323ebd5d852154220ad"
 replicas: 2
