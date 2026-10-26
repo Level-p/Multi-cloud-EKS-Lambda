@@ -1,13 +1,13 @@
 # One image recipe for every AgriPulse service (accounts, farm, shop, incidents):
 #   docker build -f app/Dockerfile --build-arg SERVICE=shop -t <registry>/agripulse/shop:<tag> app
 # Base image pinned by digest; Python packages installed with --require-hashes; RDS CA bundle pinned by checksum.
-FROM python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1 AS build
+FROM python:3.12-slim@sha256:a0f57064cbdcd6285fa45f51237ab0b35ea8ebaed06a1f5973e89e19dfb86704 AS build
 ARG SERVICE
 WORKDIR /build
 COPY ${SERVICE}/requirements.txt .
 RUN pip install --no-cache-dir --require-hashes --prefix=/install -r requirements.txt
 
-FROM python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1
+FROM python:3.12-slim@sha256:a0f57064cbdcd6285fa45f51237ab0b35ea8ebaed06a1f5973e89e19dfb86704
 ARG SERVICE
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PYTHONPATH=/app AGRIPULSE_SERVICE=${SERVICE}
 # RDS CA bundle: the services verify PostgreSQL's TLS certificate against it (sslmode=verify-full)
