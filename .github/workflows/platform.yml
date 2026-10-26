@@ -55,7 +55,7 @@ jobs:
           terraform_wrapper: false
 
       # The preflight (.github/scripts/tf_preflight.py) is tested before it is trusted
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
 
@@ -136,7 +136,7 @@ jobs:
 
       # A Helm release left FAILED by an earlier install blocks a new install ("cannot re-use a name that is still
       # in use"): it never worked, so it is uninstalled here, after approval, and the apply installs it again
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
 
