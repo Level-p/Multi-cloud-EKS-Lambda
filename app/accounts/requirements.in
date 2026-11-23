@@ -1,14 +1,14 @@
-fastapi==0.143.3
+fastapi==0.165.0
 uvicorn==0.54.0
 jinja2==3.1.6
-python-multipart==0.0.32
-sqlalchemy==2.1.5
-psycopg[binary]==3.3.6
-boto3==1.43.117
+python-multipart==0.0.34
+sqlalchemy==2.1.9
+psycopg[binary]==3.3.9
+boto3==1.44.7
 prometheus-client==0.26.0
 pyjwt[crypto]==2.15.1
 argon2-cffi==25.1.0
-email-validator==2.3.0
+email-validator==2.4.0
 # OpenTelemetry: traces and logs over OTLP/HTTP to the collector in the cluster
 opentelemetry-sdk==1.45.1
 opentelemetry-exporter-otlp-proto-http==1.45.1
